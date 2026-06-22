@@ -1,0 +1,6 @@
+portfolio.csv
+watchlist.csv
+alerts.csv
+__pycache__/
+*.pyc
+.streamlit/secrets.toml
