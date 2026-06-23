@@ -116,7 +116,7 @@ st.markdown(
 
 # Bump this whenever you publish an update, so you can confirm the
 # live site is running your latest version (it shows in the sidebar).
-APP_VERSION = "1.1"
+APP_VERSION = "1.2"
 
 # Timestamp for when data was last refreshed (shown in the sidebar).
 st.session_state.setdefault("data_refreshed_at", datetime.now())
@@ -1444,31 +1444,78 @@ elif page == "Ticker Lookup":
             # -------------------------------------------------
             st.header("Technical Chart (1-Year Price History)")
 
+            # Chart controls: line vs candlestick, plus optional overlays
+            # and indicators. All computed from the price history.
+            ctrl1, ctrl2 = st.columns([1, 2])
+            chart_type = ctrl1.radio("Chart type:", ["Line", "Candlestick"], horizontal=True)
+            overlays = ctrl2.multiselect(
+                "Add to chart:",
+                ["50-day MA", "200-day MA", "Bollinger Bands", "Volume", "RSI"],
+                default=["50-day MA", "200-day MA"],
+                help="Moving averages and Bollinger Bands overlay the price; Volume and RSI show below.",
+            )
+
             history["MA50"] = history["Close"].rolling(window=50).mean()
             history["MA200"] = history["Close"].rolling(window=200).mean()
+            # Bollinger Bands: 20-day average ± 2 standard deviations.
+            bb_mid = history["Close"].rolling(window=20).mean()
+            bb_std = history["Close"].rolling(window=20).std()
+            history["BB_upper"] = bb_mid + 2 * bb_std
+            history["BB_lower"] = bb_mid - 2 * bb_std
 
             fig = go.Figure()
+            if chart_type == "Candlestick":
+                fig.add_trace(go.Candlestick(
+                    x=history.index, open=history["Open"], high=history["High"],
+                    low=history["Low"], close=history["Close"], name="Price",
+                    increasing_line_color=COLOR_GREEN, decreasing_line_color="#cf6b6b",
+                ))
+                fig.update_layout(xaxis_rangeslider_visible=False)
+            else:
+                fig.add_trace(go.Scatter(
+                    x=history.index, y=history["Close"],
+                    mode="lines", name="Close Price", line=dict(color=COLOR_PRIMARY)
+                ))
 
-            # The actual closing price, day by day
-            fig.add_trace(go.Scatter(
-                x=history.index, y=history["Close"],
-                mode="lines", name="Close Price", line=dict(color=COLOR_PRIMARY)
-            ))
+            if "50-day MA" in overlays:
+                fig.add_trace(go.Scatter(x=history.index, y=history["MA50"], mode="lines",
+                                         name="50-Day MA", line=dict(color=COLOR_ACCENT, width=1)))
+            if "200-day MA" in overlays:
+                fig.add_trace(go.Scatter(x=history.index, y=history["MA200"], mode="lines",
+                                         name="200-Day MA", line=dict(color=COLOR_GREEN, width=1)))
+            if "Bollinger Bands" in overlays:
+                fig.add_trace(go.Scatter(x=history.index, y=history["BB_upper"], mode="lines",
+                                         name="Bollinger Upper", line=dict(color=COLOR_GRAY, width=1, dash="dot")))
+                fig.add_trace(go.Scatter(x=history.index, y=history["BB_lower"], mode="lines",
+                                         name="Bollinger Lower", line=dict(color=COLOR_GRAY, width=1, dash="dot"),
+                                         fill="tonexty", fillcolor="rgba(138,144,154,0.08)"))
 
-            # 50-day moving average line
-            fig.add_trace(go.Scatter(
-                x=history.index, y=history["MA50"],
-                mode="lines", name="50-Day Moving Avg", line=dict(color=COLOR_ACCENT)
-            ))
-
-            # 200-day moving average line
-            fig.add_trace(go.Scatter(
-                x=history.index, y=history["MA200"],
-                mode="lines", name="200-Day Moving Avg", line=dict(color=COLOR_GREEN)
-            ))
-
-            style_chart(fig, height=550, yaxis_title="Price (USD)", y_dollar=True)
+            style_chart(fig, height=520, yaxis_title="Price (USD)", y_dollar=True)
             st.plotly_chart(fig, use_container_width=True)
+
+            # Volume bars (below the price chart).
+            if "Volume" in overlays and "Volume" in history.columns:
+                vol_fig = go.Figure()
+                vol_fig.add_trace(go.Bar(x=history.index, y=history["Volume"],
+                                         name="Volume", marker_color=COLOR_PRIMARY))
+                style_chart(vol_fig, height=200, yaxis_title="Volume")
+                st.plotly_chart(vol_fig, use_container_width=True)
+
+            # RSI indicator (below), with overbought/oversold guides.
+            if "RSI" in overlays:
+                delta = history["Close"].diff()
+                gain = delta.clip(lower=0).rolling(window=14).mean()
+                loss = (-delta.clip(upper=0)).rolling(window=14).mean()
+                rs = gain / loss.replace(0, np.nan)
+                rsi = 100 - (100 / (1 + rs))
+                rsi_fig = go.Figure()
+                rsi_fig.add_trace(go.Scatter(x=history.index, y=rsi, mode="lines",
+                                             name="RSI", line=dict(color=COLOR_ACCENT)))
+                rsi_fig.add_hline(y=70, line_dash="dash", line_color="#cf6b6b", annotation_text="Overbought")
+                rsi_fig.add_hline(y=30, line_dash="dash", line_color=COLOR_GREEN, annotation_text="Oversold")
+                style_chart(rsi_fig, height=220, yaxis_title="RSI (0–100)")
+                st.plotly_chart(rsi_fig, use_container_width=True)
+                st.caption("RSI measures recent momentum: above 70 is often 'overbought', below 30 'oversold'.")
 
             # -------------------------------------------------
             # RISK STATS (for this stock, over the past year)
@@ -1537,6 +1584,35 @@ elif page == "Grade & Value":
             # 1) THE SCORECARD
             # -------------------------------------------------
             cats, overall, grade_details = grade_stock(info, history)
+
+            # ---- Adjustable weighting ----
+            # By default all five categories count equally. You can
+            # tilt the grade toward what matters to you (value, growth,
+            # quality) with a preset or your own custom weights.
+            WEIGHT_PRESETS = {
+                "Balanced": {"Valuation": 1, "Profitability": 1, "Growth": 1, "Financial Health": 1, "Momentum": 1},
+                "Value-focused": {"Valuation": 3, "Profitability": 1, "Growth": 1, "Financial Health": 2, "Momentum": 1},
+                "Growth-focused": {"Valuation": 1, "Profitability": 1, "Growth": 3, "Financial Health": 1, "Momentum": 2},
+                "Quality-focused": {"Valuation": 1, "Profitability": 3, "Growth": 1, "Financial Health": 2, "Momentum": 1},
+            }
+            weight_choice = st.selectbox(
+                "Grade weighting:", list(WEIGHT_PRESETS.keys()) + ["Custom…"],
+                help="Tilt the grade toward what matters to you. Only affects this page.",
+            )
+            if weight_choice == "Custom…":
+                wcols = st.columns(5)
+                weights = {}
+                for wcol, cat in zip(wcols, cats.keys()):
+                    weights[cat] = wcol.slider(cat, 0, 5, 1, key=f"w_{cat}")
+            else:
+                weights = WEIGHT_PRESETS[weight_choice]
+
+            # Weighted overall = weighted average of the categories that
+            # have data (categories with no data are skipped).
+            weighted_parts = [(cats[c], weights.get(c, 1)) for c in cats if cats[c] is not None and weights.get(c, 1) > 0]
+            total_w = sum(w for _, w in weighted_parts)
+            overall = (sum(s * w for s, w in weighted_parts) / total_w) if total_w > 0 else None
+
             overall_letter = score_to_letter(overall)
 
             st.header(f"Grade: {overall_letter}  ({company_name})")
