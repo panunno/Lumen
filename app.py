@@ -36,6 +36,8 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
 import os
+import io
+import requests
 from datetime import datetime
 from streamlit_option_menu import option_menu
 
@@ -112,10 +114,11 @@ st.markdown(
 # -------------------------------------------------------------
 # (The branded header now lives in the sidebar — see below.)
 
-# A single shared ticker remembered across pages (Ticker Lookup
-# and Grade & Value reuse it), plus a timestamp for when data
-# was last refreshed.
-st.session_state.setdefault("shared_ticker", "AAPL")
+# Bump this whenever you publish an update, so you can confirm the
+# live site is running your latest version (it shows in the sidebar).
+APP_VERSION = "1.1"
+
+# Timestamp for when data was last refreshed (shown in the sidebar).
 st.session_state.setdefault("data_refreshed_at", datetime.now())
 
 # The name of the file where we save your portfolio holdings.
@@ -201,6 +204,93 @@ def style_chart(fig, height=500, yaxis_title="", xaxis_title="Date",
 
 
 # ---------------------------------------------------------
+# TICKER UNIVERSE — a searchable list so you don't have to
+# memorize symbols. Pulls the S&P 500 from Wikipedia (with a
+# browser user-agent, cached a week) and always adds common
+# ETFs. Falls back to a small built-in list if the web fetch
+# fails, so the picker always works.
+# ---------------------------------------------------------
+COMMON_ETFS = {
+    "SPY": "SPDR S&P 500 ETF", "VOO": "Vanguard S&P 500 ETF", "QQQ": "Invesco QQQ (Nasdaq-100)",
+    "VTI": "Vanguard Total Stock Market ETF", "IWM": "iShares Russell 2000 ETF",
+    "DIA": "SPDR Dow Jones Industrial ETF", "VEA": "Vanguard Developed Markets ETF",
+    "VWO": "Vanguard Emerging Markets ETF", "BND": "Vanguard Total Bond Market ETF",
+    "AGG": "iShares Core US Aggregate Bond ETF", "TLT": "iShares 20+ Year Treasury",
+    "IEF": "iShares 7-10 Year Treasury", "SHY": "iShares 1-3 Year Treasury",
+    "TIP": "iShares TIPS Bond ETF", "LQD": "Investment-Grade Corporate Bond ETF",
+    "HYG": "High-Yield Corporate Bond ETF", "GLD": "SPDR Gold Shares", "SLV": "iShares Silver Trust",
+    "VNQ": "Vanguard Real Estate ETF", "SCHD": "Schwab US Dividend Equity ETF",
+    "ARKK": "ARK Innovation ETF", "XLK": "Technology Sector SPDR", "XLF": "Financials Sector SPDR",
+    "XLE": "Energy Sector SPDR", "XLV": "Health Care Sector SPDR",
+    "TSM": "Taiwan Semiconductor", "ASML": "ASML Holding", "NVO": "Novo Nordisk", "SHOP": "Shopify",
+}
+
+
+@st.cache_data(ttl=604800)
+def get_ticker_universe():
+    universe = {}
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        r = requests.get(
+            "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
+            headers=headers, timeout=10,
+        )
+        df = pd.read_html(io.StringIO(r.text))[0]
+        for _, row in df.iterrows():
+            # Wikipedia uses "." for share classes (BRK.B); Yahoo uses "-".
+            sym = str(row["Symbol"]).strip().upper().replace(".", "-")
+            name = str(row["Security"]).strip()
+            if sym and sym != "NAN":
+                universe[sym] = name
+    except Exception:
+        pass
+
+    for sym, name in COMMON_ETFS.items():
+        universe.setdefault(sym, name)
+
+    # Safety net if the web fetch failed entirely.
+    if len(universe) < 30:
+        for sym, name in {
+            "AAPL": "Apple", "MSFT": "Microsoft", "AMZN": "Amazon", "GOOGL": "Alphabet",
+            "META": "Meta Platforms", "NVDA": "Nvidia", "TSLA": "Tesla", "JPM": "JPMorgan Chase",
+            "V": "Visa", "JNJ": "Johnson & Johnson", "WMT": "Walmart", "PG": "Procter & Gamble",
+        }.items():
+            universe.setdefault(sym, name)
+    return universe
+
+
+def ticker_picker(label, key, help=None):
+    """A searchable dropdown of known tickers that also accepts any
+    symbol you type. Returns the chosen ticker symbol (uppercase)."""
+    universe = get_ticker_universe()
+    options = [f"{s} — {n}" for s, n in sorted(universe.items())]
+
+    # Seed the default once (from the last-used ticker if available).
+    if key not in st.session_state:
+        seed = st.session_state.get("current_ticker", "AAPL")
+        st.session_state[key] = next((o for o in options if o.startswith(seed + " — ")), seed)
+
+    sel = st.selectbox(label, options, key=key, accept_new_options=True, help=help)
+    if not sel:
+        return ""
+    symbol = sel.split(" — ")[0].strip().upper() if " — " in str(sel) else str(sel).strip().upper()
+    st.session_state["current_ticker"] = symbol
+    return symbol
+
+
+def fund_picker(label, key, help=None):
+    """Searchable dropdown of common mutual funds; also accepts any
+    fund symbol you type. Returns the chosen symbol (uppercase)."""
+    options = [f"{s} — {n}" for s, n in sorted(COMMON_FUNDS.items())]
+    if key not in st.session_state:
+        st.session_state[key] = next((o for o in options if o.startswith("VFIAX — ")), "VFIAX")
+    sel = st.selectbox(label, options, key=key, accept_new_options=True, help=help)
+    if not sel:
+        return ""
+    return sel.split(" — ")[0].strip().upper() if " — " in str(sel) else str(sel).strip().upper()
+
+
+# ---------------------------------------------------------
 # SECTION 4: HELPER FUNCTION TO FETCH STOCK DATA
 # This function does the actual work of talking to Yahoo Finance.
 # It is wrapped in a "cache" so that if you look up the same
@@ -277,6 +367,39 @@ def get_fund_data(ticker: str):
             f"Couldn't load '{ticker}' right now. This is usually a temporary network hiccup — "
             "wait a moment and try again."
         )
+
+
+# A short list of popular mutual funds for the searchable fund picker.
+COMMON_FUNDS = {
+    "VFIAX": "Vanguard 500 Index Admiral", "FXAIX": "Fidelity 500 Index",
+    "VTSAX": "Vanguard Total Stock Market Admiral", "SWPPX": "Schwab S&P 500 Index",
+    "FZROX": "Fidelity ZERO Total Market", "FNILX": "Fidelity ZERO Large Cap",
+    "VTIAX": "Vanguard Total International Admiral", "VBTLX": "Vanguard Total Bond Admiral",
+    "FCNTX": "Fidelity Contrafund", "VWELX": "Vanguard Wellington",
+    "VTSMX": "Vanguard Total Stock Market", "VFINX": "Vanguard 500 Index Investor",
+    "AGTHX": "American Funds Growth Fund of America", "DODGX": "Dodge & Cox Stock",
+    "PRGFX": "T. Rowe Price Growth Stock", "VWUSX": "Vanguard US Growth",
+    "FBGRX": "Fidelity Blue Chip Growth", "VDIGX": "Vanguard Dividend Growth",
+    "VBIAX": "Vanguard Balanced Index Admiral", "FFFFX": "Fidelity Freedom 2040",
+}
+
+
+# ---------------------------------------------------------
+# EARNINGS DATE HELPER
+# Returns the next earnings date for a ticker (or None). Yahoo's
+# "calendar" gives a list of upcoming earnings dates.
+# ---------------------------------------------------------
+@st.cache_data(ttl=86400)
+def get_earnings_date(ticker: str):
+    try:
+        cal = yf.Ticker(ticker).calendar
+        if isinstance(cal, dict):
+            dates = [d for d in (cal.get("Earnings Date") or []) if d is not None]
+            if dates:
+                return min(dates)
+    except Exception:
+        pass
+    return None
 
 
 # ---------------------------------------------------------
@@ -953,7 +1076,7 @@ def evaluate_alerts():
 # decide which page's code to run.
 # ---------------------------------------------------------
 PAGES = ["Overview", "Ticker Lookup", "Grade & Value", "Compare", "Discover", "Watchlist",
-         "Alerts", "Portfolio Tracker", "Screener", "Backtester", "Bonds", "Mutual Funds",
+         "Alerts", "Earnings", "Portfolio Tracker", "Backtester", "Bonds", "Mutual Funds",
          "Macro Data", "Glossary"]
 
 with st.sidebar:
@@ -989,7 +1112,7 @@ with st.sidebar:
         menu_title=None,                       # no title = more compact
         options=PAGES,
         icons=["house", "search", "clipboard-check", "arrow-left-right", "binoculars", "star",
-               "bell", "briefcase", "table", "graph-up", "bank", "collection", "globe", "book"],  # Bootstrap icon names
+               "bell", "calendar-event", "briefcase", "graph-up", "bank", "collection", "globe", "book"],  # Bootstrap icon names
         default_index=0,
         styles={
             "container": {"padding": "4px", "background-color": CARD_BG},
@@ -1033,6 +1156,7 @@ with st.sidebar:
         _hrs = _elapsed_min // 60
         _rel = f"{_hrs} hour{'s' if _hrs > 1 else ''} ago"
     st.caption(f"Data updated {_rel}. Cached up to ~1 hour for speed.")
+    st.caption(f"Lumen v{APP_VERSION}")
 
 
 # -------------------------------------------------------------
@@ -1170,7 +1294,9 @@ elif page == "Ticker Lookup":
     # We automatically capitalize it (so "aapl" still works)
     # and remove extra spaces.
     # -------------------------------------------------------
-    ticker_input = st.text_input("Enter a stock or ETF ticker:", key="shared_ticker").strip().upper()
+    ticker_input = ticker_picker(
+        "Search a stock or ETF (type to filter, or enter any ticker):", key="shared_ticker"
+    )
 
     if ticker_input:
         with st.spinner(f"Loading {ticker_input}…"):
@@ -1385,7 +1511,7 @@ elif page == "Ticker Lookup":
 elif page == "Grade & Value":
     st.caption("Score a stock and estimate what it's worth.")
 
-    gv_ticker = st.text_input("Ticker to grade:", key="shared_ticker").strip().upper()
+    gv_ticker = ticker_picker("Search a ticker to grade:", key="shared_ticker")
 
     if not gv_ticker:
         empty_state("Enter a ticker to grade it.")
@@ -1459,6 +1585,19 @@ elif page == "Grade & Value":
                 show_grade_breakdown(cats, grade_details)
                 st.caption("Each metric is scored 0–100 by how it compares to healthy benchmarks, then averaged per category.")
 
+            with st.expander("How is this calculated, and where does the data come from?"):
+                st.markdown(
+                    "- **The A–F grade is Lumen's own** — it's not from a rating agency. Lumen scores each "
+                    "metric (P/E, ROE, growth, debt, momentum, etc.) against fixed 'healthy' benchmarks, "
+                    "then averages them equally into one score.\n"
+                    "- **The fundamentals** (financials, ratios, 52-week range) come from **Yahoo Finance**.\n"
+                    "- **Analyst price targets & the Buy/Hold/Sell consensus** are Wall Street analysts' "
+                    "estimates, aggregated by **Yahoo Finance** — not Lumen's opinion.\n"
+                    "- **The Buy/Hold/Sell signal** blends Lumen's grade with that analyst target upside, the "
+                    "analyst consensus rating, and price momentum.\n"
+                    "- Treat all of it as a **research starting point, not advice** — data can be delayed or wrong."
+                )
+
             # Risk stats for this stock (same as the Ticker Lookup page).
             risk = stock_risk_stats(history)
             if risk:
@@ -1482,6 +1621,14 @@ elif page == "Grade & Value":
                 "A simple discounted-cash-flow model. Adjust the assumptions to see how the estimate changes. "
                 "Only works for companies with positive free cash flow (not ETFs)."
             )
+            with st.expander("What is a DCF, in plain English?"):
+                st.markdown(
+                    "A **discounted cash flow (DCF)** estimates what a company is *worth* by projecting the "
+                    "cash it'll generate in future years and translating that back into today's dollars "
+                    "(a dollar later is worth less than a dollar now). If the estimate is well above the "
+                    "current price, the stock may be undervalued — but the result swings a lot with the "
+                    "assumptions, so treat it as one input, not an answer."
+                )
 
             fc1, fc2, fc3, fc4 = st.columns(4)
             # Default the growth slider to the company's own revenue growth, if sensible.
@@ -1557,6 +1704,13 @@ elif page == "Grade & Value":
                 "Simulates 500 possible price paths over the next year using this stock's own historical "
                 "volatility. Shows the range of outcomes — not a prediction."
             )
+            with st.expander("What is a Monte Carlo simulation?"):
+                st.markdown(
+                    "It rolls the dice many times: starting from today's price, it generates hundreds of "
+                    "random one-year paths based on how bumpy the stock has been historically. The shaded "
+                    "band shows the middle range of where it could end up. It illustrates *uncertainty* — "
+                    "it can't actually predict the future."
+                )
             mc = monte_carlo_paths(history, days=252, simulations=500)
             if mc is None:
                 st.info("Not enough price history to simulate.")
@@ -1593,6 +1747,7 @@ elif page == "Grade & Value":
             # 3c) ANALYST TARGETS + EARNINGS TRENDS
             # -------------------------------------------------
             st.subheader("Analyst View & Business Trends")
+            st.caption("Analyst targets and ratings are Wall Street estimates aggregated by Yahoo Finance — not Lumen's.")
             target = info.get("targetMeanPrice")
             ac1, ac2, ac3 = st.columns(3)
             if target:
@@ -1631,151 +1786,221 @@ elif page == "Grade & Value":
 # metric, and a normalized price chart.
 # ===========================================================
 elif page == "Compare":
-    st.caption("Two tickers, head-to-head.")
+    st.caption("Compare 2–5 stocks or ETFs side by side — metrics, grade, signal, and price.")
 
-    cc1, cc2 = st.columns(2)
-    ticker_a = cc1.text_input("First ticker:", value=st.session_state.get("shared_ticker", "AAPL"),
-                              key="cmp_a").strip().upper()
-    ticker_b = cc2.text_input("Second ticker:", value="MSFT", key="cmp_b").strip().upper()
+    cmp_universe = get_ticker_universe()
+    cmp_opts = [f"{s} — {n}" for s, n in sorted(cmp_universe.items())]
 
-    if not ticker_a or not ticker_b:
-        empty_state("Enter two tickers to compare them.")
+    def _cmp_opt_for(sym):
+        return next((o for o in cmp_opts if o.startswith(sym + " — ")), sym)
+
+    if "cmp_multi" not in st.session_state:
+        st.session_state["cmp_multi"] = [_cmp_opt_for("AAPL"), _cmp_opt_for("MSFT")]
+
+    selected = st.multiselect(
+        "Pick 2–5 tickers (type to search, or add your own):",
+        cmp_opts, key="cmp_multi", accept_new_options=True, max_selections=5,
+    )
+
+    # Optionally fold in your saved portfolio holdings.
+    owned_tickers = set(load_portfolio_holdings()["Ticker"].tolist())
+    include_owned = False
+    if owned_tickers:
+        include_owned = st.checkbox(
+            f"Also include my {len(owned_tickers)} portfolio holding(s)", value=False)
+
+    def _cmp_sym(s):
+        return s.split(" — ")[0].strip().upper() if " — " in str(s) else str(s).strip().upper()
+
+    cmp_tickers = [_cmp_sym(s) for s in selected]
+    if include_owned:
+        cmp_tickers += sorted(owned_tickers)
+    cmp_tickers = list(dict.fromkeys([t for t in cmp_tickers if t]))[:5]
+
+    if len(cmp_tickers) < 2:
+        empty_state("Pick at least two tickers to compare.")
     else:
-        with st.spinner(f"Loading {ticker_a} and {ticker_b}…"):
-            info_a, hist_a, err_a = get_stock_data(ticker_a)
-            info_b, hist_b, err_b = get_stock_data(ticker_b)
+        with st.spinner(f"Loading {len(cmp_tickers)} ticker(s)…"):
+            for _t in cmp_tickers:
+                get_stock_data(_t)
 
-        problems = []
-        if err_a:
-            problems.append(f"{ticker_a}: {err_a}")
-        if err_b:
-            problems.append(f"{ticker_b}: {err_b}")
+        rows = []
+        cmp_errors = []
+        price_series = {}
+        cat_rows = []
+        for ticker in cmp_tickers:
+            info, history, error = get_stock_data(ticker)
+            if error or history is None or history.empty:
+                cmp_errors.append(ticker)
+                continue
 
-        if problems:
-            for p in problems:
-                st.error(p)
-        else:
-            name_a = info_a.get("longName", info_a.get("shortName", ticker_a))
-            name_b = info_b.get("longName", info_b.get("shortName", ticker_b))
-            price_a = hist_a["Close"].iloc[-1]
-            price_b = hist_b["Close"].iloc[-1]
+            end_price = history["Close"].iloc[-1]
+            start_price = history["Close"].iloc[0]
+            one_year_return_pct = (end_price / start_price - 1) * 100
+            this_year = history[history.index.year == pd.Timestamp.now().year]["Close"]
+            ytd_return_pct = ((end_price / this_year.iloc[0] - 1) * 100) if not this_year.empty else None
+            week_high = info.get("fiftyTwoWeekHigh")
+            pct_off_high = ((week_high - end_price) / week_high * 100) if week_high else None
+
+            cats, overall, _ = grade_stock(info, history)
+            _, signal_label, _ = buy_sell_signal(info, overall, history)
+            for cat in cats:
+                cat_rows.append({"Category": cat, "Ticker": ticker, "Score": cats.get(cat)})
+
+            price_series[ticker] = history["Close"]
+            rows.append({
+                "Ticker": ticker,
+                "Owned": "✓" if ticker in owned_tickers else "",
+                "Name": info.get("longName", info.get("shortName", "N/A")),
+                "Sector": info.get("sector", "Other / ETF"),
+                "Grade": score_to_letter(overall),
+                "Signal": signal_label,
+                "Price": end_price,
+                "Market Cap": info.get("marketCap"),
+                "P/E Ratio": info.get("trailingPE"),
+                "Forward P/E": info.get("forwardPE"),
+                "Dividend Yield": info.get("dividendYield"),
+                "ROE": info.get("returnOnEquity"),
+                "Profit Margin": info.get("profitMargins"),
+                "Beta": info.get("beta"),
+                "% Off High": pct_off_high,
+                "YTD Return": ytd_return_pct,
+                "1-Yr Return": one_year_return_pct,
+            })
+
+        if cmp_errors:
+            st.warning(f"Couldn't load: {', '.join(cmp_errors)}. Check the spelling.")
+
+        if len(rows) >= 2:
+            cmp_df = pd.DataFrame(rows)
 
             # -------------------------------------------------
-            # GRADES SIDE BY SIDE
+            # COMPARISON TABLE
+            # Best value in each directional column is shaded green;
+            # gains/losses colored; owned rows faintly highlighted.
             # -------------------------------------------------
-            cats_a, overall_a, _ = grade_stock(info_a, hist_a)
-            cats_b, overall_b, _ = grade_stock(info_b, hist_b)
+            st.subheader("Comparison Table")
+            st.caption("Best value in each column is shaded green. Click a header to sort.")
 
-            st.header("Grades")
-            gcol1, gcol2 = st.columns(2)
-            gcol1.metric(
-                f"{ticker_a} — {name_a}",
-                score_to_letter(overall_a),
-                f"{overall_a:.0f}/100" if overall_a is not None else "N/A",
+            best_high = ["Dividend Yield", "ROE", "Profit Margin", "YTD Return", "1-Yr Return"]
+            best_low = ["P/E Ratio", "Forward P/E", "% Off High"]
+            return_cols = ["YTD Return", "1-Yr Return"]
+
+            def color_returns(val):
+                if pd.isna(val):
+                    return ""
+                return "color: #5fae8a;" if val >= 0 else "color: #cf6b6b;"
+
+            def color_signal_cell(val):
+                return f"color: {SIGNAL_COLORS.get(val, '#e6e6e6')}; font-weight: 600;"
+
+            def highlight_best(col):
+                styles = [""] * len(col)
+                vals = pd.to_numeric(col, errors="coerce")
+                if vals.notna().sum() == 0:
+                    return styles
+                if col.name in best_high:
+                    pos = col.index.get_loc(vals.idxmax())
+                elif col.name in best_low:
+                    pos = col.index.get_loc(vals.idxmin())
+                else:
+                    return styles
+                styles[pos] = "background-color: rgba(95,174,138,0.20); font-weight: 600;"
+                return styles
+
+            def highlight_owned_row(row):
+                if row.get("Owned") == "✓":
+                    return ["background-color: rgba(90,143,194,0.10)"] * len(row)
+                return [""] * len(row)
+
+            cmp_styler = (
+                cmp_df.style
+                .apply(highlight_owned_row, axis=1)
+                .apply(highlight_best, axis=0, subset=best_high + best_low)
+                .map(color_returns, subset=return_cols)
+                .map(color_signal_cell, subset=["Signal"])
             )
-            gcol2.metric(
-                f"{ticker_b} — {name_b}",
-                score_to_letter(overall_b),
-                f"{overall_b:.0f}/100" if overall_b is not None else "N/A",
+            st.dataframe(
+                cmp_styler, use_container_width=True, hide_index=True,
+                column_config={
+                    "Signal": st.column_config.TextColumn("Signal", help="Blended Buy/Hold/Sell signal."),
+                    "Price": st.column_config.NumberColumn("Price", format="$%.2f"),
+                    "Market Cap": st.column_config.NumberColumn("Market Cap", format="compact",
+                        help="Total value of all shares — company size."),
+                    "P/E Ratio": st.column_config.NumberColumn("P/E", format="%.2f",
+                        help="Price ÷ yearly earnings. Lower can mean cheaper."),
+                    "Forward P/E": st.column_config.NumberColumn("Fwd P/E", format="%.2f",
+                        help="P/E using expected future earnings."),
+                    "Dividend Yield": st.column_config.NumberColumn("Div Yield", format="percent",
+                        help="Annual dividends as a % of price."),
+                    "ROE": st.column_config.NumberColumn("ROE", format="percent",
+                        help="Return on equity — profit per $1 of shareholder money."),
+                    "Profit Margin": st.column_config.NumberColumn("Profit Margin", format="percent",
+                        help="% of revenue kept as profit."),
+                    "Beta": st.column_config.NumberColumn("Beta", format="%.2f",
+                        help="Volatility vs. the market. 1 = moves with it."),
+                    "% Off High": st.column_config.NumberColumn("% Off High", format="%.1f%%",
+                        help="How far below its 52-week high it trades."),
+                    "YTD Return": st.column_config.NumberColumn("YTD Return", format="%.2f%%",
+                        help="Return since the start of this calendar year."),
+                    "1-Yr Return": st.column_config.NumberColumn("1-Yr Return", format="%.2f%%",
+                        help="Price change over the past year."),
+                },
             )
 
-            # Buy/Hold/Sell signal badge under each ticker's grade.
-            scol1, scol2 = st.columns(2)
-            with scol1:
-                show_signal(info_a, hist_a, overall_a)
-            with scol2:
-                show_signal(info_b, hist_b, overall_b)
+            st.download_button(
+                "Download as CSV",
+                data=cmp_df.to_csv(index=False).encode("utf-8"),
+                file_name="comparison.csv",
+                mime="text/csv",
+            )
 
-            # Grouped bar chart of category scores.
-            cat_rows = []
-            for cat in cats_a.keys():
-                cat_rows.append({"Category": cat, "Ticker": ticker_a, "Score": cats_a.get(cat)})
-                cat_rows.append({"Category": cat, "Ticker": ticker_b, "Score": cats_b.get(cat)})
+            st.divider()
+
+            # -------------------------------------------------
+            # GRADE CATEGORIES — grouped bar chart
+            # -------------------------------------------------
+            st.subheader("Grade Breakdown by Category")
             cat_cmp_df = pd.DataFrame(cat_rows).dropna(subset=["Score"])
             if not cat_cmp_df.empty:
-                cmp_fig = px.bar(cat_cmp_df, x="Category", y="Score", color="Ticker",
-                                 barmode="group")
+                cmp_fig = px.bar(cat_cmp_df, x="Category", y="Score", color="Ticker", barmode="group")
                 cmp_fig.update_layout(yaxis_range=[0, 100])
-                style_chart(cmp_fig, height=380, yaxis_title="Score (0–100)", xaxis_title="")
+                style_chart(cmp_fig, height=400, yaxis_title="Score (0–100)", xaxis_title="")
                 st.plotly_chart(cmp_fig, use_container_width=True)
 
             st.divider()
 
             # -------------------------------------------------
-            # FUNDAMENTALS TABLE WITH "WINNER" HIGHLIGHTING
-            # Each metric knows whether higher or lower is better
-            # so we can shade the stronger ticker's cell green.
+            # 1-YEAR RETURN BAR + NORMALIZED PRICE RACE
             # -------------------------------------------------
-            st.header("Head-to-Head Metrics")
+            st.subheader("1-Year Return")
+            bar_fig = px.bar(cmp_df, x="Ticker", y="1-Yr Return", color="Ticker",
+                             text=cmp_df["1-Yr Return"].map("{:+.1f}%".format))
+            style_chart(bar_fig, height=400, yaxis_title="1-Year Return (%)", xaxis_title="Ticker", y_percent=True)
+            bar_fig.update_layout(showlegend=False)
+            st.plotly_chart(bar_fig, use_container_width=True)
 
-            one_yr_a = (price_a / hist_a["Close"].iloc[0] - 1) * 100
-            one_yr_b = (price_b / hist_b["Close"].iloc[0] - 1) * 100
-
-            # (label, value for A, value for B, direction, formatter)
-            def pct_dec(v):   # decimal fraction -> percent
-                return f"{v * 100:.2f}%" if v is not None and pd.notna(v) else "N/A"
-
-            def pct_already(v):
-                return f"{v:+.2f}%" if v is not None and pd.notna(v) else "N/A"
-
-            metric_defs = [
-                ("Price", price_a, price_b, "none", fmt_price),
-                ("Market Cap", info_a.get("marketCap"), info_b.get("marketCap"), "high", format_market_cap),
-                ("Trailing P/E", info_a.get("trailingPE"), info_b.get("trailingPE"), "low", fmt_ratio),
-                ("Forward P/E", info_a.get("forwardPE"), info_b.get("forwardPE"), "low", fmt_ratio),
-                ("PEG Ratio", info_a.get("trailingPegRatio"), info_b.get("trailingPegRatio"), "low", fmt_ratio),
-                ("Price/Book", info_a.get("priceToBook"), info_b.get("priceToBook"), "low", fmt_ratio),
-                ("Dividend Yield", info_a.get("dividendYield"), info_b.get("dividendYield"), "high", pct_dec),
-                ("Profit Margin", info_a.get("profitMargins"), info_b.get("profitMargins"), "high", pct_dec),
-                ("Return on Equity", info_a.get("returnOnEquity"), info_b.get("returnOnEquity"), "high", pct_dec),
-                ("Revenue Growth", info_a.get("revenueGrowth"), info_b.get("revenueGrowth"), "high", pct_dec),
-                ("Beta", info_a.get("beta"), info_b.get("beta"), "none", fmt_ratio),
-                ("1-Yr Return", one_yr_a, one_yr_b, "high", pct_already),
-            ]
-
-            # Build the display table and remember raw values + direction
-            # so the styler can decide the winner.
-            raw_a, raw_b, direction = {}, {}, {}
-            table_rows = []
-            for label, va, vb, dirn, fmt in metric_defs:
-                raw_a[label] = va
-                raw_b[label] = vb
-                direction[label] = dirn
-                table_rows.append({"Metric": label, ticker_a: fmt(va), ticker_b: fmt(vb)})
-            cmp_table = pd.DataFrame(table_rows)
-
-            def highlight_winner(row):
-                label = row["Metric"]
-                a, b = raw_a[label], raw_b[label]
-                dirn = direction[label]
-                styles = ["", "", ""]  # Metric, A, B
-                if dirn == "none" or a is None or b is None or not pd.notna(a) or not pd.notna(b) or a == b:
-                    return styles
-                a_wins = (a > b) if dirn == "high" else (a < b)
-                win_style = "background-color: rgba(55,214,122,0.18); font-weight: bold;"
-                styles[1] = win_style if a_wins else ""
-                styles[2] = win_style if not a_wins else ""
-                return styles
-
-            styler = cmp_table.style.apply(highlight_winner, axis=1)
-            st.dataframe(styler, use_container_width=True, hide_index=True)
-            st.caption("The stronger ticker on each metric is shaded green. (Price and Beta aren't judged as better/worse.)")
-
-            st.divider()
-
-            # -------------------------------------------------
-            # NORMALIZED PRICE CHART
-            # Both rebased to 100 a year ago for a fair race.
-            # -------------------------------------------------
-            st.header("1-Year Price Race (Rebased to 100)")
+            st.subheader("Price Race (Rebased to 100)")
+            st.caption("Each line starts at 100 one year ago, so you compare percentage growth, not dollar price.")
             race_fig = go.Figure()
-            for ticker, hist in [(ticker_a, hist_a), (ticker_b, hist_b)]:
-                normalized = hist["Close"] / hist["Close"].iloc[0] * 100
+            for ticker, closes in price_series.items():
+                normalized = closes / closes.iloc[0] * 100
                 race_fig.add_trace(go.Scatter(
                     x=normalized.index, y=normalized.values, mode="lines", name=ticker
                 ))
             style_chart(race_fig, height=450, yaxis_title="Growth (start = 100)")
             st.plotly_chart(race_fig, use_container_width=True)
+
+            st.divider()
+
+            # One-click: add any compared ticker to the watchlist.
+            cmp_add = st.multiselect("Add tickers to your watchlist:", cmp_df["Ticker"].tolist(), key="cmp_add")
+            if st.button("Add selected to Watchlist", key="cmp_add_btn"):
+                added = add_tickers_to_watchlist(cmp_add)
+                if added:
+                    st.success(f"Added {added} ticker(s) to your watchlist.")
+                else:
+                    st.info("Nothing new to add (they may already be on your watchlist).")
 
 
 # ===========================================================
@@ -2065,12 +2290,20 @@ elif page == "Alerts":
         st.session_state.alerts_df = load_alerts()
 
     st.subheader("Your Alert Rules")
+    # Searchable ticker dropdown for the table — common tickers plus
+    # any already in your rules (so saved values always stay valid).
+    _existing_alert_tickers = [
+        str(t).strip().upper() for t in st.session_state.alerts_df.get("Ticker", [])
+        if pd.notna(t) and str(t).strip()
+    ]
+    alert_ticker_options = sorted(set(get_ticker_universe().keys()) | set(_existing_alert_tickers))
     alerts_edited = st.data_editor(
         st.session_state.alerts_df,
         num_rows="dynamic",
         use_container_width=True,
         column_config={
-            "Ticker": st.column_config.TextColumn("Ticker", help="e.g. AAPL"),
+            "Ticker": st.column_config.SelectboxColumn(
+                "Ticker", options=alert_ticker_options, help="Pick a ticker (type to search)."),
             "Condition": st.column_config.SelectboxColumn(
                 "Condition", options=ALERT_CONDITIONS, help="What to watch for."),
             "Value": st.column_config.TextColumn(
@@ -2107,6 +2340,64 @@ elif page == "Alerts":
     else:
         for msg in triggered:
             st.warning(msg)
+
+
+# ===========================================================
+# PAGE: EARNINGS CALENDAR
+# Shows the next earnings date for the tickers in your portfolio
+# and watchlist, sorted soonest-first.
+# ===========================================================
+elif page == "Earnings":
+    st.caption("Upcoming earnings dates for the tickers in your portfolio and watchlist.")
+
+    # Gather tickers from both lists and note where each came from.
+    pf_syms = set(load_portfolio_holdings()["Ticker"].tolist())
+    wl_df = load_watchlist()
+    wl_syms = set(wl_df["Ticker"].astype(str).str.strip().str.upper().tolist()) if "Ticker" in wl_df.columns else set()
+    wl_syms = {t for t in wl_syms if t}
+
+    all_syms = sorted(pf_syms | wl_syms)
+    if not all_syms:
+        empty_state("Add holdings or watchlist tickers to see their earnings dates.")
+    else:
+        with st.spinner(f"Checking earnings dates for {len(all_syms)} ticker(s)…"):
+            rows = []
+            today = datetime.now().date()
+            for sym in all_syms:
+                edate = get_earnings_date(sym)
+                if sym in pf_syms and sym in wl_syms:
+                    source = "Portfolio + Watchlist"
+                elif sym in pf_syms:
+                    source = "Portfolio"
+                else:
+                    source = "Watchlist"
+                days_away = (edate - today).days if edate else None
+                rows.append({
+                    "Ticker": sym,
+                    "In": source,
+                    "Next Earnings": edate.strftime("%Y-%m-%d") if edate else "N/A",
+                    "Days Away": days_away if days_away is not None else None,
+                    "_sort": days_away if days_away is not None else 99999,
+                })
+
+        earn_df = pd.DataFrame(rows).sort_values("_sort").drop(columns=["_sort"])
+
+        # Highlight earnings happening within the next 7 days.
+        def highlight_soon(row):
+            d = row["Days Away"]
+            if d is not None and not pd.isna(d) and 0 <= d <= 7:
+                return ["background-color: rgba(217,160,91,0.18)"] * len(row)
+            return [""] * len(row)
+
+        earn_styler = earn_df.style.apply(highlight_soon, axis=1)
+        st.dataframe(
+            earn_styler, use_container_width=True, hide_index=True,
+            column_config={
+                "Days Away": st.column_config.NumberColumn(
+                    "Days Away", format="%d", help="Days until the next report. Blank if unknown."),
+            },
+        )
+        st.caption("Rows shaded amber report within the next 7 days. Dates are estimates from Yahoo Finance and can shift.")
 
 
 # ===========================================================
@@ -2512,223 +2803,6 @@ elif page == "Portfolio Tracker":
 
 
 # ===========================================================
-# PAGE 3: SCREENER
-# Lets you compare several tickers side-by-side in one table.
-# ===========================================================
-elif page == "Screener":
-    st.caption("Compare several tickers side by side (comma-separated).")
-
-    # -------------------------------------------------------
-    # USER INPUT: a comma-separated list of tickers.
-    # We split on commas, strip extra spaces, capitalize, and
-    # remove any blanks/duplicates while keeping the order.
-    # -------------------------------------------------------
-    screener_input = st.text_input(
-        "Tickers to compare:", value="AAPL, MSFT, VOO", key="screener_input"
-    )
-
-    # Load the tickers you own so we can highlight / optionally
-    # include them in the comparison.
-    owned_tickers = set(load_portfolio_holdings()["Ticker"].tolist())
-    include_owned = False
-    if owned_tickers:
-        include_owned = st.checkbox(
-            f"Also include my {len(owned_tickers)} portfolio holding(s)",
-            value=False,
-            help="Adds the tickers from your saved portfolio to the comparison.",
-        )
-
-    raw_tickers = [t.strip().upper() for t in screener_input.split(",")]
-    if include_owned:
-        raw_tickers += sorted(owned_tickers)
-    screener_tickers = list(dict.fromkeys([t for t in raw_tickers if t]))  # de-duplicate, keep order
-
-    if not screener_tickers:
-        empty_state("Enter at least one ticker above to get started.")
-    else:
-        screener_rows = []
-        screener_errors = []
-
-        price_series = {}  # ticker -> 1-year close prices (for the normalized chart)
-
-        # Warm the cache with a spinner so the user sees progress;
-        # the loop below then reads the cached results instantly.
-        with st.spinner(f"Loading {len(screener_tickers)} ticker(s)…"):
-            for _t in screener_tickers:
-                get_stock_data(_t)
-
-        for ticker in screener_tickers:
-            info, history, error = get_stock_data(ticker)
-
-            if error:
-                screener_errors.append(ticker)
-                continue
-
-            # Calculate the simple 1-year return: how much the price
-            # changed from the first day in our history to the last day.
-            start_price = history["Close"].iloc[0]
-            end_price = history["Close"].iloc[-1]
-            one_year_return_pct = ((end_price - start_price) / start_price) * 100
-
-            # Year-to-date return: change from the first trading day
-            # of the current calendar year to now.
-            this_year = history[history.index.year == pd.Timestamp.now().year]["Close"]
-            ytd_return_pct = ((end_price - this_year.iloc[0]) / this_year.iloc[0] * 100) if not this_year.empty else None
-
-            week_high = info.get("fiftyTwoWeekHigh", None)
-            # How far below its 52-week high the stock is currently trading.
-            pct_off_high = ((week_high - end_price) / week_high * 100) if week_high else None
-
-            # Save the price path for the normalized comparison chart.
-            price_series[ticker] = history["Close"]
-
-            screener_rows.append({
-                "Ticker": ticker,
-                "Owned": "✓" if ticker in owned_tickers else "",
-                "Name": info.get("longName", info.get("shortName", "N/A")),
-                "Sector": info.get("sector", "Other / ETF"),
-                "Price": end_price,
-                "Market Cap": info.get("marketCap", None),
-                "P/E Ratio": info.get("trailingPE", None),
-                "Forward P/E": info.get("forwardPE", None),
-                "Dividend Yield": info.get("dividendYield", None),
-                "ROE": info.get("returnOnEquity", None),
-                "Profit Margin": info.get("profitMargins", None),
-                "Beta": info.get("beta", None),
-                "% Off High": pct_off_high,
-                "YTD Return": ytd_return_pct,
-                "1-Yr Return": one_year_return_pct,
-            })
-
-        if screener_errors:
-            st.warning(f"Couldn't find data for: {', '.join(screener_errors)}. Check these tickers are spelled correctly.")
-
-        if screener_rows:
-            screener_df = pd.DataFrame(screener_rows)
-
-            # ---------------------------------------------
-            # COLOR-CODED, SORTABLE COMPARISON TABLE
-            # We keep the numbers as real numbers (not text) so
-            # the table stays sortable by clicking a column. A
-            # pandas "Styler" colors gains green and losses red,
-            # and column_config controls how each number looks.
-            # ---------------------------------------------
-            st.subheader("Comparison Table")
-            caption = "Click any column header to sort. Green = gains, red = losses."
-            if owned_tickers:
-                caption += " Tickers you own are marked ✓ and shaded."
-            st.caption(caption)
-
-            # Columns where positive should be green and negative red.
-            return_cols = ["YTD Return", "1-Yr Return"]
-
-            def color_returns(val):
-                if pd.isna(val):
-                    return ""
-                return "color: #37d67a;" if val >= 0 else "color: #ff5c5c;"
-
-            # Shade the whole row faint blue for tickers you own.
-            def highlight_owned(row):
-                if row["Owned"] == "✓":
-                    return ["background-color: rgba(59,158,255,0.12)"] * len(row)
-                return [""] * len(row)
-
-            styler = screener_df.style.map(color_returns, subset=return_cols)
-            styler = styler.apply(highlight_owned, axis=1)
-
-            st.dataframe(
-                styler,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Price": st.column_config.NumberColumn("Price", format="$%.2f"),
-                    "Market Cap": st.column_config.NumberColumn(
-                        "Market Cap", format="compact", help="Total value of all shares — company size."),
-                    "P/E Ratio": st.column_config.NumberColumn(
-                        "P/E", format="%.2f", help="Price ÷ yearly earnings. Lower can mean cheaper."),
-                    "Forward P/E": st.column_config.NumberColumn(
-                        "Fwd P/E", format="%.2f", help="P/E using expected future earnings."),
-                    "Dividend Yield": st.column_config.NumberColumn(
-                        "Div Yield", format="percent", help="Annual dividends as a % of price."),
-                    "ROE": st.column_config.NumberColumn(
-                        "ROE", format="percent", help="Return on equity — profit per $1 of shareholder money."),
-                    "Profit Margin": st.column_config.NumberColumn(
-                        "Profit Margin", format="percent", help="% of revenue kept as profit."),
-                    "Beta": st.column_config.NumberColumn(
-                        "Beta", format="%.2f", help="Volatility vs. the market. 1 = moves with it."),
-                    "% Off High": st.column_config.NumberColumn(
-                        "% Off High", format="%.1f%%", help="How far below its 52-week high it trades."),
-                    "YTD Return": st.column_config.NumberColumn(
-                        "YTD Return", format="%.2f%%", help="Return since the start of this calendar year."),
-                    "1-Yr Return": st.column_config.NumberColumn(
-                        "1-Yr Return", format="%.2f%%", help="Price change over the past year."),
-                },
-            )
-
-            # ---------------------------------------------
-            # DOWNLOAD BUTTON
-            # Lets you export the raw comparison data to a CSV
-            # spreadsheet you can open in Excel.
-            # ---------------------------------------------
-            st.download_button(
-                "Download as CSV",
-                data=screener_df.to_csv(index=False).encode("utf-8"),
-                file_name="screener_comparison.csv",
-                mime="text/csv",
-            )
-
-            st.divider()
-
-            # ---------------------------------------------
-            # 1-YEAR RETURN BAR CHART
-            # A quick visual of which ticker performed best.
-            # ---------------------------------------------
-            st.subheader("1-Year Return Comparison")
-            bar_fig = px.bar(
-                screener_df,
-                x="Ticker",
-                y="1-Yr Return",
-                color="Ticker",
-                text=screener_df["1-Yr Return"].map("{:+.1f}%".format),
-            )
-            style_chart(bar_fig, height=450, yaxis_title="1-Year Return (%)", xaxis_title="Ticker", y_percent=True)
-            bar_fig.update_layout(showlegend=False)
-            st.plotly_chart(bar_fig, use_container_width=True)
-
-            st.divider()
-
-            # ---------------------------------------------
-            # NORMALIZED PRICE CHART
-            # Every ticker is rebased to 100 at the start of the
-            # past year, so you compare growth paths directly
-            # regardless of each stock's actual dollar price.
-            # ---------------------------------------------
-            st.subheader("Growth Comparison (Rebased to 100)")
-            st.caption("Each line starts at 100 one year ago, so you can compare percentage growth, not dollar price.")
-            norm_fig = go.Figure()
-            for ticker, closes in price_series.items():
-                normalized = closes / closes.iloc[0] * 100
-                norm_fig.add_trace(go.Scatter(
-                    x=normalized.index, y=normalized.values, mode="lines", name=ticker
-                ))
-            style_chart(norm_fig, height=450, yaxis_title="Growth (start = 100)")
-            st.plotly_chart(norm_fig, use_container_width=True)
-
-            st.divider()
-
-            # One-click: add any compared ticker to the watchlist.
-            sc_add = st.multiselect(
-                "Add tickers to your watchlist:", screener_df["Ticker"].tolist(), key="screener_add"
-            )
-            if st.button("Add selected to Watchlist", key="screener_add_btn"):
-                added = add_tickers_to_watchlist(sc_add)
-                if added:
-                    st.success(f"Added {added} ticker(s) to your watchlist.")
-                else:
-                    st.info("Nothing new to add (they may already be on your watchlist).")
-
-
-# ===========================================================
 # PAGE 4: BACKTESTER
 # Tests a simple moving-average crossover strategy:
 #   - BUY (go to 100% invested) when the short-term moving
@@ -2741,14 +2815,18 @@ elif page == "Screener":
 elif page == "Backtester":
     st.caption("Test a strategy on historical data vs. buy & hold and a benchmark.")
 
-    # -------------------------------------------------------
-    # CHOOSE A STRATEGY
-    # Two options:
-    #   - "Moving Average Crossover": invested when the short MA
-    #     is above the long MA.
-    #   - "RSI (buy low / sell high)": buy when RSI falls into
-    #     oversold territory, sell when it climbs into overbought.
-    # -------------------------------------------------------
+    with st.expander("New to backtesting? Start here"):
+        st.markdown(
+            "**Backtesting** means checking how a buy/sell rule *would have* performed in the past, "
+            "using real historical prices. It's a sanity check, not a promise — markets change, and a "
+            "rule that worked before may not work again.\n\n"
+            "**The two strategies:**\n"
+            "- **Moving Average Crossover** — buy when the short-term average price rises above the "
+            "long-term average (an uptrend), sell when it falls below. A classic trend-following rule.\n"
+            "- **RSI (buy low / sell high)** — RSI is a 0–100 'momentum' gauge. This buys when a stock "
+            "looks 'oversold' (RSI low) and sells when 'overbought' (RSI high)."
+        )
+
     strategy = st.radio(
         "Strategy:",
         ["Moving Average Crossover", "RSI (buy low / sell high)"],
@@ -2759,8 +2837,9 @@ elif page == "Backtester":
     # COMMON INPUTS (used by both strategies)
     # -------------------------------------------------------
     bt_col1, bt_col2, bt_col3 = st.columns(3)
-    bt_ticker = bt_col1.text_input("Ticker:", value="AAPL", key="bt_ticker",
-                                   help="The stock or ETF to test the strategy on.").strip().upper()
+    with bt_col1:
+        bt_ticker = ticker_picker("Ticker:", key="bt_ticker",
+                                  help="The stock or ETF to test the strategy on.")
     bt_period = bt_col2.selectbox("Test period:", ["2y", "5y", "10y", "max"], index=1,
                                   help="How far back to run the simulation.")
     bt_investment = bt_col3.number_input("Starting investment ($):", min_value=100.0, value=10000.0, step=100.0,
@@ -3331,7 +3410,7 @@ elif page == "Bonds":
 elif page == "Mutual Funds":
     st.caption("Look up a fund for fees, ratings, and returns.")
 
-    fund_ticker = st.text_input("Mutual fund ticker:", value="VFIAX", key="fund_ticker").strip().upper()
+    fund_ticker = fund_picker("Search a mutual fund (type to filter, or enter any symbol):", key="fund_ticker")
 
     if not fund_ticker:
         empty_state("Enter a mutual fund ticker to get started.")
@@ -3596,6 +3675,9 @@ elif page == "Glossary":
 
     # term -> (category, definition)
     GLOSSARY = {
+        "Lumen Grade (A–F)": ("How Lumen Works", "Lumen's own quality/value score. It rates a stock 0–100 on five equally-weighted categories — Valuation, Profitability, Growth, Financial Health, and Momentum — by scoring each underlying metric against fixed 'healthy' benchmarks, then averaging. It's a research filter, not a rating-agency grade or advice."),
+        "Buy / Hold / Sell Signal": ("How Lumen Works", "A separate 0–100 score that blends Lumen's grade with analyst price-target upside, the analyst consensus rating, and price momentum, then maps to Strong Buy → Strong Sell. Data-driven, not advice."),
+        "Data sources": ("How Lumen Works", "Fundamentals, prices, and analyst estimates come from Yahoo Finance; economic data and Treasury yields come from FRED (the Federal Reserve). Lumen computes the grades and signals itself from that data."),
         "Market Cap": ("Valuation", "The total value of all a company's shares (share price × number of shares). A quick measure of company size."),
         "P/E Ratio (Price-to-Earnings)": ("Valuation", "Share price divided by earnings per share. Roughly, how many dollars you pay for each $1 of yearly profit. Lower can mean cheaper."),
         "Forward P/E": ("Valuation", "Like P/E, but using analysts' expected future earnings instead of past ones."),

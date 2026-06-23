@@ -36,12 +36,13 @@ path to the Python interpreter, e.g. the `Scripts\streamlit.exe` inside your Pyt
   a Buy/Hold/Sell signal, and recent news for any stock or ETF.
 - **Grade & Value** — an A–F scorecard (with the "why"), a discounted-cash-flow fair value,
   return scenarios, a Monte Carlo simulation, and analyst/earnings info.
-- **Compare** — two tickers head-to-head across grade, signal, metrics, and price.
+- **Compare** — put 2–5 tickers side by side: full metrics table (best value highlighted),
+  grade, signal, category breakdown, returns, a price race, and CSV export.
 - **Discover** — surfaces under-the-radar stocks with a data-driven Buy/Sell signal.
 - **Watchlist** — saved candidate tickers, auto-graded, with notes.
 - **Alerts** — in-app rules (price, daily move %, signal) checked when you open or refresh.
+- **Earnings** — upcoming earnings dates for your portfolio and watchlist tickers.
 - **Portfolio Tracker** — your holdings, valued live, with allocation and diversification.
-- **Screener** — compare many tickers side by side; export to CSV.
 - **Backtester** — test moving-average or RSI strategies vs. buy & hold and a benchmark.
 - **Bonds** — Treasury yield curve, the yield-curve spread, and common bond ETFs.
 - **Mutual Funds** — fund fees, ratings, and returns.
