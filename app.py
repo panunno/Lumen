@@ -116,7 +116,7 @@ st.markdown(
 
 # Bump this whenever you publish an update, so you can confirm the
 # live site is running your latest version (it shows in the sidebar).
-APP_VERSION = "1.2"
+APP_VERSION = "1.4"
 
 # Timestamp for when data was last refreshed (shown in the sidebar).
 st.session_state.setdefault("data_refreshed_at", datetime.now())
@@ -158,6 +158,181 @@ def _detect_multiuser():
 
 
 MULTIUSER = _detect_multiuser()
+
+
+# -------------------------------------------------------------
+# API KEYS (read from secrets — never hardcoded)
+# Locally these come from .streamlit/secrets.toml (git-ignored);
+# on the cloud, from the app's Settings -> Secrets. Empty string
+# if not set, in which case the related features quietly turn off.
+# -------------------------------------------------------------
+def get_secret(name):
+    try:
+        return str(st.secrets.get(name, "")).strip()
+    except Exception:
+        return ""
+
+
+FMP_API_KEY = get_secret("FMP_API_KEY")
+TWELVEDATA_API_KEY = get_secret("TWELVEDATA_API_KEY")
+
+
+# ---------------------------------------------------------
+# TWELVE DATA — price fallback used when Yahoo Finance can't
+# return a quote. Returns {"price", "prev_close"} or None.
+# ---------------------------------------------------------
+@st.cache_data(ttl=600)
+def get_twelvedata_quote(ticker: str):
+    if not TWELVEDATA_API_KEY:
+        return None
+    try:
+        r = requests.get(
+            "https://api.twelvedata.com/quote",
+            params={"symbol": ticker, "apikey": TWELVEDATA_API_KEY}, timeout=10,
+        )
+        d = r.json()
+        if isinstance(d, dict) and d.get("close"):
+            price = float(d["close"])
+            prev = d.get("previous_close")
+            return {"price": price, "prev_close": float(prev) if prev else price}
+    except Exception:
+        return None
+    return None
+
+
+# ---------------------------------------------------------
+# FMP — company search (by symbol or name). Returns a list of
+# {"symbol", "name", "exchange"} so you can find a ticker
+# without memorizing it. Cached per query.
+# ---------------------------------------------------------
+@st.cache_data(ttl=86400)
+def fmp_search(query: str):
+    if not FMP_API_KEY or not query.strip():
+        return []
+    found = {}
+    for endpoint in ("search-symbol", "search-name"):
+        try:
+            r = requests.get(
+                f"https://financialmodelingprep.com/stable/{endpoint}",
+                params={"query": query.strip(), "apikey": FMP_API_KEY}, timeout=10,
+            )
+            data = r.json()
+            if isinstance(data, list):
+                for it in data:
+                    sym = (it.get("symbol") or "").upper()
+                    if sym and sym not in found:
+                        found[sym] = {
+                            "symbol": sym,
+                            "name": it.get("name") or sym,
+                            "exchange": it.get("exchange") or "",
+                        }
+        except Exception:
+            continue
+    return list(found.values())[:25]
+
+
+FMP_BASE = "https://financialmodelingprep.com/stable"
+
+
+@st.cache_data(ttl=86400)
+def fmp_analyst(ticker: str):
+    """Analyst price targets + Buy/Hold/Sell ratings breakdown (FMP)."""
+    if not FMP_API_KEY:
+        return None
+    out = {}
+    try:
+        pt = requests.get(f"{FMP_BASE}/price-target-summary",
+                          params={"symbol": ticker, "apikey": FMP_API_KEY}, timeout=10).json()
+        if isinstance(pt, list) and pt:
+            pt = pt[0]
+        if isinstance(pt, dict):
+            out["target"] = pt.get("lastQuarterAvgPriceTarget") or pt.get("lastYearAvgPriceTarget")
+            out["target_count"] = pt.get("lastQuarterCount") or pt.get("lastYearCount")
+        g = requests.get(f"{FMP_BASE}/grades-historical",
+                         params={"symbol": ticker, "apikey": FMP_API_KEY, "limit": 1}, timeout=10).json()
+        if isinstance(g, list) and g:
+            g = g[0]
+            out["ratings"] = {
+                "Strong Buy": int(g.get("analystRatingsStrongBuy", 0) or 0),
+                "Buy": int(g.get("analystRatingsBuy", 0) or 0),
+                "Hold": int(g.get("analystRatingsHold", 0) or 0),
+                "Sell": int(g.get("analystRatingsSell", 0) or 0),
+                "Strong Sell": int(g.get("analystRatingsStrongSell", 0) or 0),
+            }
+            out["ratings_date"] = g.get("date")
+        return out or None
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=86400)
+def fmp_earnings(ticker: str):
+    """List of earnings rows (past actuals + upcoming estimates) from FMP."""
+    if not FMP_API_KEY:
+        return []
+    try:
+        d = requests.get(f"{FMP_BASE}/earnings",
+                         params={"symbol": ticker, "apikey": FMP_API_KEY}, timeout=10).json()
+        return d if isinstance(d, list) else []
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=86400)
+def fmp_ratios(ticker: str):
+    """Latest financial ratios + key metrics (FMP), merged into one dict."""
+    if not FMP_API_KEY:
+        return None
+    out = {}
+    try:
+        for endpoint in ("ratios", "key-metrics"):
+            d = requests.get(f"{FMP_BASE}/{endpoint}",
+                             params={"symbol": ticker, "apikey": FMP_API_KEY, "limit": 1}, timeout=10).json()
+            if isinstance(d, list) and d:
+                out.update(d[0])
+        return out or None
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=86400)
+def fmp_grade_inputs(ticker: str):
+    """Map FMP's cleaner reported figures onto the same keys grade_stock
+    reads from yfinance, so the grade can use more reliable inputs.
+    Returns a dict of overrides (only fields FMP actually provided)."""
+    if not FMP_API_KEY:
+        return {}
+    # Reuse the cached ratios+key-metrics fetch; only growth is extra.
+    rk = fmp_ratios(ticker) or {}
+    g = {}
+    try:
+        d = requests.get(f"{FMP_BASE}/financial-growth",
+                         params={"symbol": ticker, "apikey": FMP_API_KEY, "limit": 1}, timeout=10).json()
+        if isinstance(d, list) and d:
+            g = d[0]
+    except Exception:
+        g = {}
+
+    overrides = {}
+
+    def put(key, value, scale=1):
+        if isinstance(value, (int, float)):
+            overrides[key] = value * scale
+
+    put("trailingPE", rk.get("priceToEarningsRatio"))
+    put("priceToBook", rk.get("priceToBookRatio"))
+    put("priceToSalesTrailing12Months", rk.get("priceToSalesRatio"))
+    put("trailingPegRatio", rk.get("priceToEarningsGrowthRatio"))
+    put("profitMargins", rk.get("netProfitMargin"))
+    put("operatingMargins", rk.get("operatingProfitMargin"))
+    put("returnOnEquity", rk.get("returnOnEquity"))
+    put("currentRatio", rk.get("currentRatio"))
+    # FMP debt/equity is a plain ratio (1.5); yfinance/grade expect percent (150).
+    put("debtToEquity", rk.get("debtToEquityRatio"), 100)
+    put("revenueGrowth", g.get("revenueGrowth"))
+    put("earningsGrowth", g.get("epsgrowth"))
+    return overrides
+
 
 # A consistent color palette so every chart looks the same.
 # Muted, understated tones to match the subtle dark theme.
@@ -341,7 +516,9 @@ def get_current_price(ticker: str):
             price = stock.history(period="1d")["Close"].iloc[-1]
         return float(price)
     except Exception:
-        return None
+        # Last resort: Twelve Data (if a key is configured).
+        td = get_twelvedata_quote(ticker)
+        return td["price"] if td else None
 
 
 # ---------------------------------------------------------
@@ -506,6 +683,11 @@ def get_portfolio_quote(ticker: str):
             "dividend_yield": float(dividend_yield),
         }
     except Exception:
+        # Last resort: Twelve Data price (no sector/dividend info there).
+        td = get_twelvedata_quote(ticker)
+        if td:
+            return {"price": td["price"], "prev_close": td["prev_close"],
+                    "sector": "Other / ETF", "dividend_yield": 0.0}
         return None
 
 
@@ -1294,9 +1476,29 @@ elif page == "Ticker Lookup":
     # We automatically capitalize it (so "aapl" still works)
     # and remove extra spaces.
     # -------------------------------------------------------
+    # Apply a ticker chosen via the company-name search (set on the
+    # previous run) BEFORE the picker widget is created.
+    if st.session_state.get("pending_ticker"):
+        st.session_state["shared_ticker"] = st.session_state.pop("pending_ticker")
+
     ticker_input = ticker_picker(
         "Search a stock or ETF (type to filter, or enter any ticker):", key="shared_ticker"
     )
+
+    # Company-name search powered by FMP (only if a key is configured).
+    if FMP_API_KEY:
+        with st.expander("Search by company name (e.g. 'apple', 'tesla')"):
+            fmp_q = st.text_input("Company name or symbol:", key="fmp_query")
+            if fmp_q.strip():
+                matches = fmp_search(fmp_q)
+                if matches:
+                    labels = [f"{m['symbol']} — {m['name']} ({m['exchange']})" for m in matches]
+                    chosen = st.selectbox("Matches:", labels, key="fmp_match")
+                    if st.button("Use this ticker"):
+                        st.session_state["pending_ticker"] = chosen.split(" — ")[0].strip().upper()
+                        st.rerun()
+                else:
+                    st.caption("No matches found (or the search service is unavailable).")
 
     if ticker_input:
         with st.spinner(f"Loading {ticker_input}…"):
@@ -1583,6 +1785,21 @@ elif page == "Grade & Value":
             # -------------------------------------------------
             # 1) THE SCORECARD
             # -------------------------------------------------
+            # Optionally enhance the grade inputs with FMP's cleaner
+            # reported figures (this page only — other pages stay on
+            # Yahoo data so their grades remain comparable).
+            if FMP_API_KEY:
+                use_fmp_grade = st.checkbox(
+                    "Use enhanced fundamentals (FMP) for the grade", value=True,
+                    help="Fills in / overrides Yahoo data with FMP's cleaner reported figures "
+                         "for a more reliable grade. Turn off to match the other pages.",
+                )
+                if use_fmp_grade:
+                    overrides = fmp_grade_inputs(gv_ticker)
+                    if overrides:
+                        info = {**info, **overrides}
+                        st.caption(f"Grade inputs enhanced with FMP data for {len(overrides)} metric(s).")
+
             cats, overall, grade_details = grade_stock(info, history)
 
             # ---- Adjustable weighting ----
@@ -1686,6 +1903,73 @@ elif page == "Grade & Value":
                            help="Return earned per unit of risk. Higher is better; above 1 is decent.")
                 rr3.metric("Max Drawdown", f"{maxdd:.1f}%",
                            help="The worst peak-to-trough drop over the past year.")
+
+            # -------------------------------------------------
+            # WALL STREET ANALYST RATINGS (via FMP)
+            # Real analyst Buy/Hold/Sell counts + price targets.
+            # -------------------------------------------------
+            analyst = fmp_analyst(gv_ticker) if FMP_API_KEY else None
+            if analyst:
+                st.divider()
+                st.subheader("Wall Street Analyst Ratings")
+                st.caption("Live analyst ratings and price targets, sourced from Financial Modeling Prep.")
+                ratings = analyst.get("ratings") or {}
+                total = sum(ratings.values())
+                target = analyst.get("target")
+
+                a1, a2, a3 = st.columns(3)
+                a1.metric("Analysts Covering", f"{total}" if total else (str(analyst.get("target_count")) if analyst.get("target_count") else "N/A"))
+                a2.metric("Avg Price Target", fmt_price(target))
+                if target and current_price:
+                    upside = (target / current_price - 1) * 100
+                    verdict = "Undervalued" if upside > 10 else ("Overvalued" if upside < -10 else "Fair")
+                    a3.metric("Upside vs. Price", f"{upside:+.1f}%", verdict)
+
+                if total:
+                    rdf = pd.DataFrame({"Rating": list(ratings.keys()), "Analysts": list(ratings.values())})
+                    rfig = px.bar(rdf, x="Rating", y="Analysts", color="Rating",
+                                  color_discrete_map={"Strong Buy": "#5fae8a", "Buy": "#7fae5f",
+                                                      "Hold": "#d9a05b", "Sell": "#cf8a6b", "Strong Sell": "#cf6b6b"})
+                    rfig.update_layout(showlegend=False)
+                    style_chart(rfig, height=320, yaxis_title="# of Analysts", xaxis_title="")
+                    st.plotly_chart(rfig, use_container_width=True)
+                    if analyst.get("ratings_date"):
+                        st.caption(f"Ratings as of {analyst['ratings_date']}. Source: Financial Modeling Prep.")
+
+            # -------------------------------------------------
+            # KEY FINANCIAL RATIOS (via FMP)
+            # -------------------------------------------------
+            ratios = fmp_ratios(gv_ticker) if FMP_API_KEY else None
+            if ratios:
+                st.divider()
+                st.subheader("Key Financial Ratios")
+                st.caption("Latest reported fiscal-year figures, sourced from Financial Modeling Prep.")
+
+                def _r_pct(v):
+                    return f"{v * 100:.1f}%" if isinstance(v, (int, float)) else "N/A"
+
+                def _r_num(v):
+                    return f"{v:.2f}" if isinstance(v, (int, float)) else "N/A"
+
+                k1, k2, k3, k4 = st.columns(4)
+                k1.metric("Gross Margin", _r_pct(ratios.get("grossProfitMargin")),
+                          help="Revenue left after the direct cost of goods.")
+                k2.metric("Operating Margin", _r_pct(ratios.get("operatingProfitMargin")),
+                          help="Profit from core operations as a % of revenue.")
+                k3.metric("Net Margin", _r_pct(ratios.get("netProfitMargin")),
+                          help="Bottom-line profit as a % of revenue.")
+                k4.metric("Return on Assets", _r_pct(ratios.get("returnOnAssets")),
+                          help="Profit generated per dollar of assets.")
+
+                k5, k6, k7, k8 = st.columns(4)
+                k5.metric("Current Ratio", _r_num(ratios.get("currentRatio")),
+                          help="Short-term assets ÷ short-term bills. Above 1 = can cover near-term obligations.")
+                k6.metric("Quick Ratio", _r_num(ratios.get("quickRatio")),
+                          help="Like current ratio but excludes inventory — a stricter liquidity check.")
+                k7.metric("EV / EBITDA", _r_num(ratios.get("evToEBITDA")),
+                          help="Enterprise value vs. earnings before interest, taxes, depreciation. Lower can mean cheaper.")
+                k8.metric("EV / Sales", _r_num(ratios.get("evToSales")),
+                          help="Enterprise value vs. revenue.")
 
             st.divider()
 
@@ -2433,32 +2717,47 @@ elif page == "Earnings":
     wl_syms = {t for t in wl_syms if t}
 
     all_syms = sorted(pf_syms | wl_syms)
+
+    def _parse_date(s):
+        try:
+            return datetime.strptime(str(s)[:10], "%Y-%m-%d").date()
+        except Exception:
+            return None
+
     if not all_syms:
         empty_state("Add holdings or watchlist tickers to see their earnings dates.")
     else:
-        with st.spinner(f"Checking earnings dates for {len(all_syms)} ticker(s)…"):
+        today = datetime.now().date()
+        with st.spinner(f"Checking earnings for {len(all_syms)} ticker(s)…"):
             rows = []
-            today = datetime.now().date()
             for sym in all_syms:
-                edate = get_earnings_date(sym)
-                if sym in pf_syms and sym in wl_syms:
-                    source = "Portfolio + Watchlist"
-                elif sym in pf_syms:
-                    source = "Portfolio"
-                else:
-                    source = "Watchlist"
+                source = ("Portfolio + Watchlist" if sym in pf_syms and sym in wl_syms
+                          else "Portfolio" if sym in pf_syms else "Watchlist")
+
+                # Prefer FMP (gives estimates); fall back to yfinance date.
+                edate = None
+                eps_est = rev_est = None
+                for r in sorted(fmp_earnings(sym), key=lambda x: str(x.get("date", ""))):
+                    d = _parse_date(r.get("date"))
+                    if d and d >= today:
+                        edate, eps_est, rev_est = d, r.get("epsEstimated"), r.get("revenueEstimated")
+                        break
+                if edate is None:
+                    edate = get_earnings_date(sym)
+
                 days_away = (edate - today).days if edate else None
                 rows.append({
                     "Ticker": sym,
                     "In": source,
                     "Next Earnings": edate.strftime("%Y-%m-%d") if edate else "N/A",
-                    "Days Away": days_away if days_away is not None else None,
+                    "Days Away": days_away,
+                    "EPS Est.": eps_est,
+                    "Revenue Est.": format_market_cap(rev_est) if rev_est else "N/A",
                     "_sort": days_away if days_away is not None else 99999,
                 })
 
         earn_df = pd.DataFrame(rows).sort_values("_sort").drop(columns=["_sort"])
 
-        # Highlight earnings happening within the next 7 days.
         def highlight_soon(row):
             d = row["Days Away"]
             if d is not None and not pd.isna(d) and 0 <= d <= 7:
@@ -2471,9 +2770,54 @@ elif page == "Earnings":
             column_config={
                 "Days Away": st.column_config.NumberColumn(
                     "Days Away", format="%d", help="Days until the next report. Blank if unknown."),
+                "EPS Est.": st.column_config.NumberColumn(
+                    "EPS Est.", format="$%.2f", help="Analysts' expected earnings per share (FMP)."),
             },
         )
-        st.caption("Rows shaded amber report within the next 7 days. Dates are estimates from Yahoo Finance and can shift.")
+        st.caption("Rows shaded amber report within the next 7 days. Dates/estimates can shift.")
+
+        # -------------------------------------------------
+        # RECENT EARNINGS SURPRISES (FMP) for one ticker
+        # -------------------------------------------------
+        if FMP_API_KEY:
+            st.divider()
+            st.subheader("Recent Earnings Surprises")
+            st.caption("How recent results compared to analyst expectations (actual vs. estimated EPS).")
+            sel = st.selectbox("Ticker:", all_syms, key="earn_surprise")
+            past = [r for r in fmp_earnings(sel) if r.get("epsActual") is not None]
+            past = sorted(past, key=lambda x: str(x.get("date", "")), reverse=True)[:6]
+            if not past:
+                st.caption("No reported earnings history available for this ticker.")
+            else:
+                srows = []
+                for r in past:
+                    act, est = r.get("epsActual"), r.get("epsEstimated")
+                    surprise = None
+                    if isinstance(act, (int, float)) and isinstance(est, (int, float)) and est != 0:
+                        surprise = (act - est) / abs(est) * 100
+                    srows.append({
+                        "Date": str(r.get("date", ""))[:10],
+                        "EPS Estimate": est,
+                        "EPS Actual": act,
+                        "Surprise": surprise,
+                        "Result": "Beat" if (surprise is not None and surprise > 0) else ("Miss" if surprise is not None else "—"),
+                    })
+                sdf = pd.DataFrame(srows)
+
+                def color_result(val):
+                    return ("color: #5fae8a; font-weight:600;" if val == "Beat"
+                            else "color: #cf6b6b; font-weight:600;" if val == "Miss" else "")
+
+                st.dataframe(
+                    sdf.style.map(color_result, subset=["Result"]),
+                    use_container_width=True, hide_index=True,
+                    column_config={
+                        "EPS Estimate": st.column_config.NumberColumn("EPS Estimate", format="$%.2f"),
+                        "EPS Actual": st.column_config.NumberColumn("EPS Actual", format="$%.2f"),
+                        "Surprise": st.column_config.NumberColumn("Surprise", format="%.1f%%",
+                            help="How far actual EPS beat (+) or missed (−) the estimate."),
+                    },
+                )
 
 
 # ===========================================================
