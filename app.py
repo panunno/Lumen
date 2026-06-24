@@ -116,7 +116,7 @@ st.markdown(
 
 # Bump this whenever you publish an update, so you can confirm the
 # live site is running your latest version (it shows in the sidebar).
-APP_VERSION = "1.5"
+APP_VERSION = "1.7"
 
 # Timestamp for when data was last refreshed (shown in the sidebar).
 st.session_state.setdefault("data_refreshed_at", datetime.now())
@@ -537,27 +537,39 @@ def _stock_data_from_fmp(ticker: str):
 # Returns (info, history, error).
 # ---------------------------------------------------------
 @st.cache_data(ttl=3600)
-def get_stock_data(ticker: str):
+def _fetch_stock_cached(ticker: str):
+    """Returns (info, history) on success, or RAISES on failure.
+    Because it raises (rather than returns) on failure, Streamlit does
+    NOT cache failures — so a temporary outage won't get stuck for an
+    hour; the next lookup retries."""
     # 1) Try Yahoo Finance.
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
         history = stock.history(period="1y")
         if not (history is None or history.empty or not info or info.get("regularMarketPrice") is None):
-            return info, history, None
+            return info, history
     except Exception:
         pass
 
     # 2) Fall back to FMP (works where Yahoo is IP-blocked).
     fmp = _stock_data_from_fmp(ticker)
     if fmp:
-        return fmp[0], fmp[1], None
+        return fmp[0], fmp[1]
 
-    return None, None, (
-        f"Couldn't load data for '{ticker}'. Double-check the ticker symbol — for example, AAPL, "
-        "MSFT, or VOO. (If this happens for every ticker on the hosted site, the data sources may be "
-        "temporarily unavailable.)"
-    )
+    raise ValueError(f"No data for {ticker}")
+
+
+def get_stock_data(ticker: str):
+    try:
+        info, history = _fetch_stock_cached(ticker)
+        return info, history, None
+    except Exception:
+        return None, None, (
+            f"Couldn't load data for '{ticker}'. Double-check the ticker symbol — for example, AAPL, "
+            "MSFT, or VOO. (If it just started working for other tickers, click 'Refresh data' in the "
+            "sidebar to clear a stale error.)"
+        )
 
 
 # ---------------------------------------------------------
@@ -1400,6 +1412,10 @@ with st.sidebar:
         _rel = f"{_hrs} hour{'s' if _hrs > 1 else ''} ago"
     st.caption(f"Data updated {_rel}. Cached up to ~1 hour for speed.")
     st.caption(f"Lumen v{APP_VERSION}")
+    st.caption(
+        f"Data keys — FMP: {'set' if FMP_API_KEY else 'MISSING'} · "
+        f"Twelve Data: {'set' if TWELVEDATA_API_KEY else 'MISSING'}"
+    )
 
 
 # -------------------------------------------------------------
