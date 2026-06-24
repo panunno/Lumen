@@ -116,7 +116,7 @@ st.markdown(
 
 # Bump this whenever you publish an update, so you can confirm the
 # live site is running your latest version (it shows in the sidebar).
-APP_VERSION = "1.4"
+APP_VERSION = "1.5"
 
 # Timestamp for when data was last refreshed (shown in the sidebar).
 st.session_state.setdefault("data_refreshed_at", datetime.now())
@@ -466,37 +466,98 @@ def fund_picker(label, key, help=None):
 
 
 # ---------------------------------------------------------
+# FMP FALLBACK for stock data — Yahoo Finance blocks shared
+# server IPs (like Streamlit Cloud's), so when yfinance fails
+# we rebuild the same (info, history) shape from FMP, which
+# isn't IP-blocked. Returns (info, history) or None.
+# ---------------------------------------------------------
+def _stock_data_from_fmp(ticker: str):
+    if not FMP_API_KEY:
+        return None
+    try:
+        h = requests.get(f"{FMP_BASE}/historical-price-eod/full",
+                         params={"symbol": ticker, "apikey": FMP_API_KEY}, timeout=20).json()
+        if not isinstance(h, list) or not h:
+            return None
+        hdf = pd.DataFrame(h)
+        hdf["date"] = pd.to_datetime(hdf["date"])
+        hdf = hdf.sort_values("date").set_index("date")
+        hdf = hdf.rename(columns={"open": "Open", "high": "High", "low": "Low",
+                                  "close": "Close", "volume": "Volume"})
+        keep = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in hdf.columns]
+        history = hdf[keep].tail(252)
+        if history.empty or "Close" not in history.columns:
+            return None
+
+        q = requests.get(f"{FMP_BASE}/quote", params={"symbol": ticker, "apikey": FMP_API_KEY}, timeout=10).json()
+        q = q[0] if isinstance(q, list) and q else {}
+        p = requests.get(f"{FMP_BASE}/profile", params={"symbol": ticker, "apikey": FMP_API_KEY}, timeout=10).json()
+        p = p[0] if isinstance(p, list) and p else {}
+        rk = fmp_ratios(ticker) or {}
+
+        d2e = rk.get("debtToEquityRatio")
+        info = {
+            "longName": p.get("companyName") or q.get("name") or ticker,
+            "shortName": p.get("companyName") or ticker,
+            "quoteType": "ETF" if p.get("isEtf") else "EQUITY",
+            "regularMarketPrice": q.get("price") or p.get("price"),
+            "sector": p.get("sector") or "Other / ETF",
+            "industry": p.get("industry"),
+            "longBusinessSummary": p.get("description"),
+            "marketCap": q.get("marketCap") or p.get("marketCap"),
+            "fiftyTwoWeekHigh": q.get("yearHigh"),
+            "fiftyTwoWeekLow": q.get("yearLow"),
+            "beta": p.get("beta"),
+            "trailingPE": rk.get("priceToEarningsRatio"),
+            "priceToBook": rk.get("priceToBookRatio"),
+            "priceToSalesTrailing12Months": rk.get("priceToSalesRatio"),
+            "trailingPegRatio": rk.get("priceToEarningsGrowthRatio"),
+            "profitMargins": rk.get("netProfitMargin"),
+            "operatingMargins": rk.get("operatingProfitMargin"),
+            "grossMargins": rk.get("grossProfitMargin"),
+            "returnOnEquity": rk.get("returnOnEquity"),
+            "currentRatio": rk.get("currentRatio"),
+            "debtToEquity": (d2e * 100) if isinstance(d2e, (int, float)) else None,
+            "trailingEps": rk.get("netIncomePerShare"),
+            "dividendYield": rk.get("dividendYield"),
+            "yield": rk.get("dividendYield"),
+            "totalAssets": q.get("marketCap"),
+        }
+        if info["regularMarketPrice"] is None:
+            return None
+        return info, history
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------
 # SECTION 4: HELPER FUNCTION TO FETCH STOCK DATA
-# This function does the actual work of talking to Yahoo Finance.
-# It is wrapped in a "cache" so that if you look up the same
-# ticker again soon, the app doesn't have to re-download
-# everything (it loads faster).
-#
-# It returns three things:
-#   - info: a dictionary of company facts (name, sector, etc.)
-#   - history: a table of daily prices for the past year
-#   - error: a message if something went wrong, otherwise None
+# Tries Yahoo Finance first; if that fails (e.g. Yahoo blocking
+# the cloud's IP), falls back to FMP so the app keeps working.
+# Returns (info, history, error).
 # ---------------------------------------------------------
 @st.cache_data(ttl=3600)
 def get_stock_data(ticker: str):
+    # 1) Try Yahoo Finance.
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
         history = stock.history(period="1y")
-
-        # If Yahoo Finance has no data for this ticker, treat it as invalid.
-        if history.empty or not info or info.get("regularMarketPrice") is None:
-            return None, None, (
-                f"Couldn't find '{ticker}'. Double-check the ticker symbol — for example, "
-                "AAPL (Apple), MSFT (Microsoft), or VOO (an ETF). Mutual funds go on the Mutual Funds page."
-            )
-
-        return info, history, None
+        if not (history is None or history.empty or not info or info.get("regularMarketPrice") is None):
+            return info, history, None
     except Exception:
-        return None, None, (
-            f"Couldn't load data for '{ticker}' right now. This is usually a temporary network "
-            "hiccup with Yahoo Finance — wait a moment and try again."
-        )
+        pass
+
+    # 2) Fall back to FMP (works where Yahoo is IP-blocked).
+    fmp = _stock_data_from_fmp(ticker)
+    if fmp:
+        return fmp[0], fmp[1], None
+
+    return None, None, (
+        f"Couldn't load data for '{ticker}'. Double-check the ticker symbol — for example, AAPL, "
+        "MSFT, or VOO. (If this happens for every ticker on the hosted site, the data sources may be "
+        "temporarily unavailable.)"
+    )
 
 
 # ---------------------------------------------------------
