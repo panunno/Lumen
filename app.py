@@ -117,7 +117,7 @@ st.markdown(
 
 # Bump this whenever you publish an update, so you can confirm the
 # live site is running your latest version (it shows in the sidebar).
-APP_VERSION = "2.0"
+APP_VERSION = "2.1"
 
 # Timestamp for when data was last refreshed (shown in the sidebar).
 st.session_state.setdefault("data_refreshed_at", datetime.now())
@@ -4029,6 +4029,13 @@ elif page == "Bonds":
 # ===========================================================
 elif page == "Mutual Funds":
     st.caption("Look up a fund for fees, ratings, and returns.")
+
+    if MULTIUSER:
+        st.info(
+            "Note: detailed mutual fund data (expense ratio, ratings) comes from Yahoo Finance, which "
+            "isn't reachable from this hosted server, so funds may not load here. **Mutual funds work "
+            "fully when you run Lumen on your own computer.** Stocks and ETFs work everywhere."
+        )
 
     fund_ticker = fund_picker("Search a mutual fund (type to filter, or enter any symbol):", key="fund_ticker")
 
