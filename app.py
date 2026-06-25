@@ -38,6 +38,7 @@ import plotly.express as px
 import os
 import io
 import requests
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from streamlit_option_menu import option_menu
 
@@ -116,7 +117,7 @@ st.markdown(
 
 # Bump this whenever you publish an update, so you can confirm the
 # live site is running your latest version (it shows in the sidebar).
-APP_VERSION = "1.7"
+APP_VERSION = "2.0"
 
 # Timestamp for when data was last refreshed (shown in the sidebar).
 st.session_state.setdefault("data_refreshed_at", datetime.now())
@@ -136,6 +137,9 @@ WATCHLIST_COLUMNS = ["Ticker", "Notes"]
 ALERTS_FILE = "alerts.csv"
 ALERTS_COLUMNS = ["Ticker", "Condition", "Value"]
 ALERT_CONDITIONS = ["Price above", "Price below", "Daily move % above", "Signal is"]
+
+# Recorded portfolio value snapshots (one per day) for the history chart.
+PF_HISTORY_FILE = "portfolio_history.csv"
 
 
 # -------------------------------------------------------------
@@ -531,10 +535,48 @@ def _stock_data_from_fmp(ticker: str):
 
 
 # ---------------------------------------------------------
+# STOOQ FALLBACK — free, keyless daily history with broad
+# coverage (incl. ETFs / dual-class shares FMP's free plan
+# omits). Works from the cloud where Yahoo is IP-blocked.
+# ---------------------------------------------------------
+def _history_from_stooq(ticker: str):
+    try:
+        sym = ticker.strip().lower()  # Stooq uses e.g. aapl.us, brk-b.us
+        r = requests.get(f"https://stooq.com/q/d/l/?s={sym}.us&i=d", timeout=15)
+        text = r.text or ""
+        if r.status_code != 200 or not text.startswith("Date"):
+            return None
+        df = pd.read_csv(io.StringIO(text))
+        if df.empty or "Close" not in df.columns:
+            return None
+        df["Date"] = pd.to_datetime(df["Date"])
+        df = df.set_index("Date").sort_index()
+        keep = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
+        df = df[keep].tail(252)
+        return df if not df.empty else None
+    except Exception:
+        return None
+
+
+def _minimal_info_from_history(ticker: str, history):
+    """A bare-bones info dict when only price history is available
+    (e.g. an ETF from Stooq). Enough for the price/chart/momentum;
+    company fundamentals just show N/A."""
+    last = history["Close"].iloc[-1]
+    yr = history["Close"].tail(252)
+    return {
+        "longName": ticker, "shortName": ticker, "quoteType": "EQUITY",
+        "regularMarketPrice": float(last),
+        "fiftyTwoWeekHigh": float(yr.max()), "fiftyTwoWeekLow": float(yr.min()),
+        "sector": "N/A",
+    }
+
+
+# ---------------------------------------------------------
 # SECTION 4: HELPER FUNCTION TO FETCH STOCK DATA
-# Tries Yahoo Finance first; if that fails (e.g. Yahoo blocking
-# the cloud's IP), falls back to FMP so the app keeps working.
-# Returns (info, history, error).
+# Order of sources: Yahoo Finance → FMP → Stooq. Yahoo is best
+# but blocked on cloud IPs; FMP's free plan misses some symbols;
+# Stooq fills the gaps with free history. Returns (info, history).
 # ---------------------------------------------------------
 @st.cache_data(ttl=3600)
 def _fetch_stock_cached(ticker: str):
@@ -557,6 +599,12 @@ def _fetch_stock_cached(ticker: str):
     if fmp:
         return fmp[0], fmp[1]
 
+    # 3) Fall back to Stooq for history (covers symbols FMP's free
+    #    plan omits, e.g. many ETFs). Fundamentals will be limited.
+    stooq_hist = _history_from_stooq(ticker)
+    if stooq_hist is not None and not stooq_hist.empty:
+        return _minimal_info_from_history(ticker, stooq_hist), stooq_hist
+
     raise ValueError(f"No data for {ticker}")
 
 
@@ -566,9 +614,9 @@ def get_stock_data(ticker: str):
         return info, history, None
     except Exception:
         return None, None, (
-            f"Couldn't load data for '{ticker}'. Double-check the ticker symbol — for example, AAPL, "
-            "MSFT, or VOO. (If it just started working for other tickers, click 'Refresh data' in the "
-            "sidebar to clear a stale error.)"
+            f"Couldn't load data for '{ticker}'. On the hosted site, data comes from free sources that "
+            "don't cover every symbol — most large US stocks and many ETFs work. (It works for all "
+            "tickers when you run Lumen locally.) Double-check the symbol, or try 'Refresh data'."
         )
 
 
@@ -602,21 +650,28 @@ def get_current_price(ticker: str):
 # ---------------------------------------------------------
 @st.cache_data(ttl=3600)
 def get_fund_data(ticker: str):
+    # 1) Yahoo Finance (gives the fund-specific fields: fees, ratings…).
     try:
         tk = yf.Ticker(ticker)
         info = tk.info
         history = tk.history(period="5y")
-        if history.empty or not info:
-            return None, None, (
-                f"Couldn't find '{ticker}'. Check the fund symbol — most mutual funds are 5 letters "
-                "ending in X, like VFIAX, FXAIX, or FCNTX."
-            )
-        return info, history, None
+        if not (history.empty or not info):
+            return info, history, None
     except Exception:
-        return None, None, (
-            f"Couldn't load '{ticker}' right now. This is usually a temporary network hiccup — "
-            "wait a moment and try again."
-        )
+        pass
+
+    # 2) Cloud fallback: Stooq history (Yahoo is blocked on cloud).
+    #    Fund-specific fields (expense ratio, ratings) won't be available.
+    sh = _history_from_stooq(ticker)
+    if sh is not None and not sh.empty:
+        info = _minimal_info_from_history(ticker, sh)
+        info["quoteType"] = "MUTUALFUND"
+        return info, sh, None
+
+    return None, None, (
+        f"Couldn't load '{ticker}'. Check the fund symbol — most mutual funds are 5 letters ending "
+        "in X (VFIAX, FXAIX, FCNTX). Note: detailed fund data may be unavailable on the hosted site."
+    )
 
 
 # A short list of popular mutual funds for the searchable fund picker.
@@ -658,11 +713,32 @@ def get_earnings_date(ticker: str):
 # real fields under each item's "content" key, so we dig in and
 # return a tidy list of {title, publisher, date, url}.
 # ---------------------------------------------------------
+def _google_news(ticker: str, limit: int = 8):
+    """Free, cloud-friendly news via Google News RSS (works where
+    yfinance's news is blocked). Returns the same tidy item shape."""
+    try:
+        url = (f"https://news.google.com/rss/search?q=%22{ticker}%22%20stock"
+               "&hl=en-US&gl=US&ceid=US:en")
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=12)
+        root = ET.fromstring(r.content)
+        items = []
+        for it in root.findall(".//item")[:limit]:
+            items.append({
+                "title": it.findtext("title") or "(untitled)",
+                "publisher": it.findtext("source") or "Google News",
+                "date": (it.findtext("pubDate") or "")[:16],
+                "url": it.findtext("link") or "",
+            })
+        return items
+    except Exception:
+        return []
+
+
 @st.cache_data(ttl=1800)
 def get_news(ticker: str, limit: int = 8):
+    items = []
     try:
         raw = yf.Ticker(ticker).news or []
-        items = []
         for it in raw[:limit]:
             c = it.get("content", it)
             url_field = c.get("canonicalUrl") or c.get("clickThroughUrl") or {}
@@ -675,9 +751,13 @@ def get_news(ticker: str, limit: int = 8):
                 "date": (c.get("pubDate") or "")[:10],
                 "url": url or "",
             })
-        return items
     except Exception:
-        return []
+        items = []
+
+    # Fallback (e.g. on the hosted site where Yahoo is blocked).
+    if not items:
+        items = _google_news(ticker, limit)
+    return items
 
 
 def show_news(ticker: str):
@@ -1269,6 +1349,39 @@ def load_alerts():
 
 
 # ---------------------------------------------------------
+# PORTFOLIO VALUE HISTORY — record one snapshot per day so we
+# can chart total value over time. Persists to a CSV locally;
+# session-only on the hosted (multi-user) app.
+# ---------------------------------------------------------
+def load_pf_history():
+    if "pf_history" not in st.session_state:
+        df = pd.DataFrame(columns=["Date", "Value"])
+        if not MULTIUSER and os.path.exists(PF_HISTORY_FILE):
+            try:
+                df = pd.read_csv(PF_HISTORY_FILE)
+            except Exception:
+                df = pd.DataFrame(columns=["Date", "Value"])
+        st.session_state.pf_history = df
+    return st.session_state.pf_history
+
+
+def record_pf_snapshot(total_value):
+    df = load_pf_history()
+    today = datetime.now().strftime("%Y-%m-%d")
+    if "Date" in df.columns:
+        df = df[df["Date"] != today]   # replace today's if it exists
+    df = pd.concat([df, pd.DataFrame([{"Date": today, "Value": round(float(total_value), 2)}])],
+                   ignore_index=True).sort_values("Date")
+    st.session_state.pf_history = df
+    if not MULTIUSER:
+        try:
+            df.to_csv(PF_HISTORY_FILE, index=False)
+        except Exception:
+            pass
+    return df
+
+
+# ---------------------------------------------------------
 # SHARED HELPER: EVALUATE ALERT RULES AGAINST LIVE DATA
 # Returns a list of plain-English messages for rules that are
 # currently triggered. Uses cached data so repeated checks are
@@ -1412,10 +1525,6 @@ with st.sidebar:
         _rel = f"{_hrs} hour{'s' if _hrs > 1 else ''} ago"
     st.caption(f"Data updated {_rel}. Cached up to ~1 hour for speed.")
     st.caption(f"Lumen v{APP_VERSION}")
-    st.caption(
-        f"Data keys — FMP: {'set' if FMP_API_KEY else 'MISSING'} · "
-        f"Twelve Data: {'set' if TWELVEDATA_API_KEY else 'MISSING'}"
-    )
 
 
 # -------------------------------------------------------------
@@ -3105,6 +3214,20 @@ elif page == "Portfolio Tracker":
                 f"${total_dividends:,.2f}",
                 help=f"Approximately a {div_yield_on_value:.2f}% yield on your current value.",
             )
+
+            # Record today's total value, then show the value-over-time
+            # chart once we have at least two days of history.
+            pf_hist = record_pf_snapshot(total_value)
+            if pf_hist is not None and len(pf_hist) >= 2:
+                st.markdown("**Value Over Time**")
+                vh = pf_hist.copy()
+                vh["Date"] = pd.to_datetime(vh["Date"])
+                vfig = go.Figure()
+                vfig.add_trace(go.Scatter(x=vh["Date"], y=vh["Value"], mode="lines+markers",
+                                          name="Total Value", line=dict(color=COLOR_PRIMARY)))
+                style_chart(vfig, height=300, yaxis_title="Total Value (USD)", y_dollar=True)
+                st.plotly_chart(vfig, use_container_width=True)
+                st.caption("Recorded each day you value your portfolio. It fills in over time as you check back.")
 
             st.divider()
 

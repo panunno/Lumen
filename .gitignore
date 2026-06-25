@@ -1,6 +1,13 @@
+# Personal data files — never share or upload these.
+# They hold YOUR portfolio, watchlist, and alert rules.
 portfolio.csv
 watchlist.csv
 alerts.csv
+portfolio_history.csv
+
+# Python cache
 __pycache__/
 *.pyc
+
+# Streamlit secrets (if ever added)
 .streamlit/secrets.toml
