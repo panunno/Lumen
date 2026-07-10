@@ -1,0 +1,9 @@
+# This file controls the app's color theme.
+# Streamlit reads it automatically - no code needed elsewhere.
+[theme]
+base = "dark"
+primaryColor = "#c9a24b"
+backgroundColor = "#14110c"
+secondaryBackgroundColor = "#1c1810"
+textColor = "#efe7d6"
+font = "sans serif"

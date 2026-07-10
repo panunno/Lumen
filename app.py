@@ -55,60 +55,74 @@ st.set_page_config(
 )
 
 # -------------------------------------------------------------
-# "SLEEK DARK FINTECH" THEME (Concept A)
-# Custom CSS turns Streamlit's default metrics into rounded
-# cards, refines spacing/typography, and gives buttons and the
-# sidebar a more premium feel. The accent color is one blue.
+# "EDITORIAL × TERMINAL" THEME with a restrained gold accent.
+# Serif headings (Fraunces), monospaced numbers (IBM Plex Mono),
+# clean sans body (Inter). Supports a light/dark toggle: the
+# chosen mode drives a palette that colours every surface.
 # -------------------------------------------------------------
-ACCENT = "#5a8fc2"          # cooler muted steel-blue — subtle, professional
-CARD_BG = "#11151d"         # deep, understated card surface
-CARD_BORDER = "rgba(255,255,255,0.05)"
+st.session_state.setdefault("theme", "Dark")
+THEME = st.session_state["theme"]
+
+PALETTES = {
+    "Dark": {
+        "page": "#14110c", "card": "#1c1810", "sidebar": "#100d09",
+        "text": "#efe7d6", "muted": "#a99a80", "border": "rgba(233,231,221,0.12)",
+        "accent": "#c9a24b", "accent_text": "#14110c", "input": "#1c1810",
+    },
+    "Light": {
+        "page": "#f4efe4", "card": "#ffffff", "sidebar": "#ebe4d6",
+        "text": "#0f0d0a", "muted": "#3d382f", "border": "rgba(15,13,10,0.22)",
+        "accent": "#8a5d28", "accent_text": "#ffffff", "input": "#ffffff",
+    },
+}
+P = PALETTES[THEME]
+ACCENT = P["accent"]
+CARD_BG = P["card"]
+CARD_BORDER = P["border"]
 
 st.markdown(
-    f"""
-    <style>
-      .block-container {{ padding-top: 2.6rem; padding-bottom: 3rem; }}
-
-      /* Turn each metric into a rounded card */
-      [data-testid="stMetric"] {{
-        background: {CARD_BG};
-        border: 1px solid {CARD_BORDER};
-        border-radius: 12px;
-        padding: 14px 16px;
-      }}
-      [data-testid="stMetricValue"] {{ font-size: 1.45rem; font-weight: 500; }}
-      [data-testid="stMetricLabel"] {{ opacity: 0.75; }}
-      /* Make the up/down delta pop a little more */
-      [data-testid="stMetricDelta"] {{ font-weight: 600; }}
-
-      /* Data tables: same rounded, bordered card treatment */
-      [data-testid="stDataFrame"], [data-testid="stTable"] {{
-        border: 1px solid {CARD_BORDER};
-        border-radius: 12px;
-        overflow: hidden;
-      }}
-
-      /* Headers & spacing */
-      h1, h2, h3 {{ letter-spacing: 0.2px; }}
-      h2 {{ margin-top: 0.6rem; }}
-      h3 {{ margin-top: 0.3rem; }}
-      hr {{ margin: 0.9rem 0 1.3rem 0; border-color: {CARD_BORDER}; }}
-
-      /* Buttons: subtle accent */
-      .stButton > button {{
-        border-radius: 9px;
-        border: 1px solid {CARD_BORDER};
-        font-weight: 500;
-      }}
-      .stButton > button:hover {{ border-color: {ACCENT}; color: {ACCENT}; }}
-
-      /* Inputs a touch rounder */
-      [data-baseweb="input"], [data-baseweb="select"] {{ border-radius: 9px; }}
-
-      /* Sidebar a hair darker for separation */
-      [data-testid="stSidebar"] {{ background: #0b0f16; }}
-    </style>
-    """,
+    f"""<style>
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap');
+:root, .stApp {{ --background-color:{P['page']}; --secondary-background-color:{P['card']}; --text-color:{P['text']}; --primary-color:{P['accent']}; }}
+.stApp {{ background:{P['page']}; color:{P['text']}; font-family:'Inter',sans-serif; }}
+[data-testid="stAppViewContainer"], [data-testid="stMain"] {{ background:{P['page']}; }}
+[data-testid="stHeader"] {{ background:transparent; }}
+.block-container {{ padding-top:2.4rem; padding-bottom:3rem; }}
+[data-testid="stMetric"], [data-testid="stExpander"], [data-testid="stExpander"] details {{ overflow:hidden; }}
+[data-testid="stAlert"] {{ background:{P['card']}; border:1px solid {P['border']}; border-radius:12px; }}
+[data-testid="stAlert"] p, [data-testid="stAlert"] div {{ color:{P['text']}; }}
+/* Force readable text on our backgrounds (our CSS loads after Streamlit's,
+   so these win on equal specificity without overriding inline colors). */
+[data-testid="stMarkdownContainer"], [data-testid="stMarkdownContainer"] p,
+[data-testid="stMarkdownContainer"] li, [data-testid="stMarkdownContainer"] strong,
+[data-testid="stWidgetLabel"] p, [data-testid="stWidgetLabel"] label,
+.stRadio label, .stCheckbox label, .stExpander summary,
+[data-testid="stExpander"] summary, [data-testid="stExpander"] p {{ color:{P['text']}; }}
+[data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p {{ color:{P['muted']}; }}
+[data-testid="stExpander"], [data-testid="stExpander"] details {{ border:1px solid {P['border']}; border-radius:12px; background:{P['card']}; }}
+[data-testid="stTabs"] button {{ color:{P['muted']}; }}
+[data-testid="stTabs"] button[aria-selected="true"] {{ color:{P['text']}; }}
+h1,h2,h3,h4 {{ font-family:'Fraunces',serif !important; font-weight:600; color:{P['text']} !important; letter-spacing:.2px; }}
+h2 {{ margin-top:.6rem; }} h3 {{ margin-top:.3rem; }}
+[data-testid="stMetric"] {{ background:{P['card']}; border:1px solid {P['border']}; border-radius:12px; padding:14px 16px; }}
+[data-testid="stMetricValue"] {{ font-family:'IBM Plex Mono',monospace; font-size:1.38rem; font-weight:500; color:{P['text']}; }}
+[data-testid="stMetricLabel"] {{ color:{P['muted']}; }}
+[data-testid="stMetricDelta"] {{ font-family:'IBM Plex Mono',monospace; font-weight:600; }}
+[data-testid="stDataFrame"], [data-testid="stTable"] {{ border:1px solid {P['border']}; border-radius:12px; overflow:hidden; }}
+hr {{ margin:.9rem 0 1.3rem 0; border-color:{P['border']}; }}
+.stButton > button {{ border-radius:9px; border:1px solid {P['border']}; color:{P['text']}; background:transparent; font-weight:500; }}
+.stButton > button:hover {{ border-color:{P['accent']}; color:{P['accent']}; }}
+[data-testid="stSidebar"] {{ background:{P['sidebar']}; }}
+[data-testid="stSidebar"] p, [data-testid="stSidebar"] label, [data-testid="stSidebar"] span {{ color:{P['text']}; }}
+/* The nav-menu is a component iframe; its default dark background
+   shows as black corners behind the rounded menu box. Make it blend. */
+[data-testid="stSidebar"] iframe {{ background:transparent !important; }}
+[data-testid="stSidebar"] [data-testid="stElementContainer"]:has(iframe) {{ background:{P['sidebar']}; border-radius:12px; }}
+a, a:visited {{ color:{P['accent']}; }}
+[data-baseweb="base-input"] input, [data-baseweb="input"] input, textarea, [data-baseweb="select"] > div {{ background:{P['input']} !important; color:{P['text']} !important; }}
+.lu-mono {{ font-family:'IBM Plex Mono',monospace; }}
+.lu-serif {{ font-family:'Fraunces',serif; }}
+</style>""",
     unsafe_allow_html=True,
 )
 
@@ -117,7 +131,7 @@ st.markdown(
 
 # Bump this whenever you publish an update, so you can confirm the
 # live site is running your latest version (it shows in the sidebar).
-APP_VERSION = "2.1"
+APP_VERSION = "2.2"
 
 # Timestamp for when data was last refreshed (shown in the sidebar).
 st.session_state.setdefault("data_refreshed_at", datetime.now())
@@ -338,12 +352,12 @@ def fmp_grade_inputs(ticker: str):
     return overrides
 
 
-# A consistent color palette so every chart looks the same.
-# Muted, understated tones to match the subtle dark theme.
-COLOR_PRIMARY = "#5a8fc2"   # cool steel blue - main line (price, strategy)
-COLOR_ACCENT = "#d9a05b"    # muted amber - 50-day MA / secondary line
-COLOR_GREEN = "#5fae8a"     # muted green - 200-day MA / positive
-COLOR_GRAY = "#8a909a"      # gray       - buy & hold reference line
+# Chart palette — gold primary (matches the accent) plus tones
+# that read on both the light and dark editorial backgrounds.
+COLOR_PRIMARY = ACCENT      # gold - main line (price, strategy)
+COLOR_ACCENT = "#6f96a8"    # muted slate-teal - 50-day MA / secondary line
+COLOR_GREEN = "#4f9d6e"     # muted green - 200-day MA / positive
+COLOR_GRAY = "#938a78"      # warm gray - buy & hold reference line
 COLOR_PURPLE = "#9b86c4"    # muted violet - benchmark line
 
 
@@ -356,29 +370,34 @@ COLOR_PURPLE = "#9b86c4"    # muted violet - benchmark line
 # ---------------------------------------------------------
 def style_chart(fig, height=500, yaxis_title="", xaxis_title="Date",
                 y_dollar=False, y_percent=False):
+    # Adapt chart colors to the current light/dark theme.
+    dark = THEME == "Dark"
+    grid = "rgba(255,255,255,0.08)" if dark else "rgba(35,32,26,0.10)"
     fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="rgba(0,0,0,0)",   # transparent outer background
-        plot_bgcolor="rgba(0,0,0,0)",    # transparent plotting area
+        template="plotly_dark" if dark else "plotly_white",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
         height=height,
         margin=dict(l=20, r=20, t=30, b=20),
         xaxis_title=xaxis_title,
         yaxis_title=yaxis_title,
-        legend=dict(bgcolor="rgba(0,0,0,0)"),
-        font=dict(color="#e6e6e6"),
-        # Unified hover: one tidy tooltip box for all series at a point.
+        legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color=P["text"])),
+        font=dict(color=P["text"], family="Inter"),
         hovermode="x unified",
-        hoverlabel=dict(bgcolor="#11151d", bordercolor="rgba(255,255,255,0.12)",
-                        font=dict(color="#e8eaed", size=12)),
+        hoverlabel=dict(bgcolor=P["card"], bordercolor=P["border"],
+                        font=dict(color=P["text"], size=12)),
     )
-    fig.update_xaxes(gridcolor="rgba(255,255,255,0.08)", showspikes=False)
-    # Format the y-axis as dollars or percentages when asked.
+    # Axis ticks/labels/titles use the text color (near-black in light)
+    # so they stay clearly visible; grid and axis lines stay subtle.
+    axis_kw = dict(gridcolor=grid, color=P["text"], linecolor=P["border"],
+                   tickfont=dict(color=P["text"]), title_font=dict(color=P["text"]))
+    fig.update_xaxes(showspikes=False, **axis_kw)
     if y_dollar:
-        fig.update_yaxes(tickprefix="$", tickformat=",.0f", gridcolor="rgba(255,255,255,0.08)")
+        fig.update_yaxes(tickprefix="$", tickformat=",.0f", **axis_kw)
     elif y_percent:
-        fig.update_yaxes(ticksuffix="%", gridcolor="rgba(255,255,255,0.08)")
+        fig.update_yaxes(ticksuffix="%", **axis_kw)
     else:
-        fig.update_yaxes(gridcolor="rgba(255,255,255,0.08)")
+        fig.update_yaxes(**axis_kw)
     return fig
 
 
@@ -1093,8 +1112,8 @@ def show_grade_breakdown(cats, details):
             dot = f"<span style='color:{color}'>&#9679;</span>"
             sub_txt = f"{sub:.0f}/100" if sub is not None else "no data"
             st.markdown(
-                f"&nbsp;&nbsp;{dot} **{label}**: {shown} &nbsp;·&nbsp; "
-                f"<span style='opacity:0.6'>{sub_txt}</span>",
+                f"&nbsp;&nbsp;{dot} **{label}**: <span class='lu-mono'>{shown}</span> &nbsp;·&nbsp; "
+                f"<span class='lu-mono' style='color:{P['muted']}'>{sub_txt}</span>",
                 unsafe_allow_html=True,
             )
         st.markdown("")
@@ -1193,11 +1212,11 @@ def show_signal(info, history, overall_score):
     color = SIGNAL_COLORS.get(label, "#8a909a")
     st.markdown(
         f"<div style='display:inline-flex; align-items:center; gap:10px; "
-        f"background:#11151d; border:1px solid {color}; border-radius:10px; "
+        f"background:{P['card']}; border:1px solid {color}; border-radius:10px; "
         f"padding:8px 14px; margin:2px 0 6px;'>"
-        f"<span style='font-size:12px; color:#8b93a1;'>SIGNAL</span>"
-        f"<span style='font-size:18px; font-weight:700; color:{color};'>{label}</span>"
-        f"<span style='font-size:12px; color:#8b93a1;'>· score {score:.0f}/100</span>"
+        f"<span style='font-size:11px; letter-spacing:1.5px; color:{P['muted']};'>SIGNAL</span>"
+        f"<span style='font-size:18px; font-weight:600; color:{color};'>{label}</span>"
+        f"<span class='lu-mono' style='font-size:12px; color:{P['muted']};'>· {score:.0f}/100</span>"
         f"</div>",
         unsafe_allow_html=True,
     )
@@ -1214,7 +1233,8 @@ def show_signal(info, history, overall_score):
             dot = f"<span style='color:{dot_color}'>&#9679;</span>"
             sub_txt = f"{sub:.0f}/100" if sub is not None else "no data"
             st.markdown(
-                f"{dot} **{name}**: {shown} &nbsp;·&nbsp; <span style='opacity:0.6'>{sub_txt}</span>",
+                f"{dot} **{name}**: <span class='lu-mono'>{shown}</span> &nbsp;·&nbsp; "
+                f"<span class='lu-mono' style='color:{P['muted']}'>{sub_txt}</span>",
                 unsafe_allow_html=True,
             )
         st.caption("A blended, data-driven signal for research — not financial advice.")
@@ -1468,8 +1488,8 @@ with st.sidebar:
             </svg>
           </div>
           <div>
-            <div style="font-size:20px; font-weight:700; color:#e8eaed; line-height:1.1; letter-spacing:0.5px;">Lumen</div>
-            <div style="font-size:12px; color:#8b93a1;">Your personal market dashboard</div>
+            <div style="font-family:'Fraunces',serif; font-size:22px; font-weight:600; color:{P['text']}; line-height:1.1;">Lumen</div>
+            <div style="font-size:12px; color:{P['muted']};">Your personal market dashboard</div>
           </div>
         </div>
         """,
@@ -1483,23 +1503,22 @@ with st.sidebar:
                "bell", "calendar-event", "briefcase", "graph-up", "bank", "collection", "globe", "book"],  # Bootstrap icon names
         default_index=0,
         styles={
-            "container": {"padding": "4px", "background-color": CARD_BG},
+            "container": {"padding": "4px 0", "background-color": P["sidebar"],
+                          "border-radius": "0"},
             "icon": {"color": ACCENT, "font-size": "16px"},
             "nav-link": {
                 "font-size": "14px",
                 "padding": "8px 10px",
                 "margin": "2px 0",
-                "color": "#e6e6e6",
-                "--hover-color": "#222a36",
+                "color": P["text"],
+                "--hover-color": P["border"],
             },
-            # When a tab is selected, force the accent background and
-            # make BOTH the text and its icon white so they stay
-            # clearly visible against the highlight.
+            # Selected tab: gold background with high-contrast text/icon.
             "nav-link-selected": {
                 "background-color": ACCENT,
-                "color": "#ffffff",
+                "color": P["accent_text"],
             },
-            "nav-link-selected .icon": {"color": "#ffffff !important"},
+            "nav-link-selected .icon": {"color": f"{P['accent_text']} !important"},
         },
     )
     st.caption("A beginner-friendly investing dashboard.")
@@ -1524,6 +1543,11 @@ with st.sidebar:
         _hrs = _elapsed_min // 60
         _rel = f"{_hrs} hour{'s' if _hrs > 1 else ''} ago"
     st.caption(f"Data updated {_rel}. Cached up to ~1 hour for speed.")
+
+    # Light / dark toggle. Writing to session_state["theme"] re-runs
+    # the app, and the theme CSS at the top re-renders in that mode.
+    st.radio("Appearance", ["Dark", "Light"], key="theme", horizontal=True)
+
     st.caption(f"Lumen v{APP_VERSION}")
 
 
@@ -1533,9 +1557,9 @@ with st.sidebar:
 # the main area (the brand/logo now lives in the sidebar).
 # -------------------------------------------------------------
 st.markdown(
-    f"<div style='font-size:36px; font-weight:800; color:#f3f5f8; "
-    f"letter-spacing:0.2px; line-height:1.15; margin:0 0 6px; "
-    f"padding-bottom:10px; border-bottom:1px solid {CARD_BORDER};'>{page}</div>",
+    f"<div style=\"font-family:'Fraunces',serif; font-size:38px; font-weight:600; "
+    f"color:{P['text']}; letter-spacing:0.2px; line-height:1.1; margin:0 0 6px; "
+    f"padding-bottom:10px; border-bottom:1px solid {P['border']};\">{page}</div>",
     unsafe_allow_html=True,
 )
 
@@ -2022,10 +2046,10 @@ elif page == "Grade & Value":
 
             # Color the headline grade green/amber/red.
             if overall is not None:
-                grade_color = COLOR_GREEN if overall >= 70 else (COLOR_ACCENT if overall >= 50 else "#ff5c5c")
+                grade_color = COLOR_GREEN if overall >= 70 else (COLOR_ACCENT if overall >= 50 else "#cf6b6b")
                 st.markdown(
-                    f"<h2 style='color:{grade_color};margin-top:-10px'>"
-                    f"Overall score: {overall:.0f}/100</h2>",
+                    f"<h2 style='color:{grade_color};margin-top:-10px'>Overall score: "
+                    f"<span class='lu-mono'>{overall:.0f}/100</span></h2>",
                     unsafe_allow_html=True,
                 )
 
