@@ -131,7 +131,7 @@ a, a:visited {{ color:{P['accent']}; }}
 
 # Bump this whenever you publish an update, so you can confirm the
 # live site is running your latest version (it shows in the sidebar).
-APP_VERSION = "2.2"
+APP_VERSION = "2.3"
 
 # Timestamp for when data was last refreshed (shown in the sidebar).
 st.session_state.setdefault("data_refreshed_at", datetime.now())
@@ -421,6 +421,34 @@ COMMON_ETFS = {
     "ARKK": "ARK Innovation ETF", "XLK": "Technology Sector SPDR", "XLF": "Financials Sector SPDR",
     "XLE": "Energy Sector SPDR", "XLV": "Health Care Sector SPDR",
     "TSM": "Taiwan Semiconductor", "ASML": "ASML Holding", "NVO": "Novo Nordisk", "SHOP": "Shopify",
+    "QQQM": "Invesco Nasdaq-100 ETF", "JEPI": "JPMorgan Equity Premium ETF",
+    "JEPQ": "JPMorgan Nasdaq Premium ETF", "SOXL": "Direxion Semis Bull 3x",
+    "TQQQ": "ProShares UltraPro QQQ", "VUG": "Vanguard Growth ETF", "VYM": "Vanguard High Dividend ETF",
+    "SMH": "VanEck Semiconductor ETF",
+}
+
+# Popular retail / Robinhood names that aren't in the S&P 500, so the
+# dropdown is browsable beyond the index (you can still type any ticker).
+POPULAR_STOCKS = {
+    "PLTR": "Palantir", "SOFI": "SoFi Technologies", "HOOD": "Robinhood", "COIN": "Coinbase",
+    "RIVN": "Rivian", "LCID": "Lucid Group", "NIO": "NIO", "XPEV": "XPeng", "LI": "Li Auto",
+    "GME": "GameStop", "AMC": "AMC Entertainment", "BB": "BlackBerry", "PLUG": "Plug Power",
+    "CHPT": "ChargePoint", "RUN": "Sunrun", "DKNG": "DraftKings", "RBLX": "Roblox", "U": "Unity",
+    "SNAP": "Snap", "PINS": "Pinterest", "XYZ": "Block (Square)", "SPOT": "Spotify", "LYFT": "Lyft",
+    "DASH": "DoorDash", "RIOT": "Riot Platforms", "MARA": "MARA Holdings", "MSTR": "Strategy (MicroStrategy)",
+    "AI": "C3.ai", "SOUN": "SoundHound AI", "IONQ": "IonQ", "RGTI": "Rigetti Computing",
+    "BBAI": "BigBear.ai", "AFRM": "Affirm", "UPST": "Upstart", "OPEN": "Opendoor", "CLOV": "Clover Health",
+    "TLRY": "Tilray", "CGC": "Canopy Growth", "SNDL": "SNDL Inc", "DNA": "Ginkgo Bioworks",
+    "NKLA": "Nikola", "SPCE": "Virgin Galactic", "JOBY": "Joby Aviation", "ACHR": "Archer Aviation",
+    "RKLB": "Rocket Lab", "ASTS": "AST SpaceMobile", "LUNR": "Intuitive Machines", "OKLO": "Oklo",
+    "SMR": "NuScale Power", "BABA": "Alibaba", "JD": "JD.com", "PDD": "PDD Holdings", "BIDU": "Baidu",
+    "SE": "Sea Limited", "GRAB": "Grab Holdings", "NU": "Nu Holdings", "MELI": "MercadoLibre",
+    "DJT": "Trump Media", "CVNA": "Carvana", "W": "Wayfair", "CHWY": "Chewy", "RDDT": "Reddit",
+    "TTD": "The Trade Desk", "NET": "Cloudflare", "DDOG": "Datadog", "SNOW": "Snowflake",
+    "CRWD": "CrowdStrike", "PATH": "UiPath", "PLTK": "Playtika", "FUBO": "FuboTV", "LMND": "Lemonade",
+    "DOCU": "DocuSign", "ROKU": "Roku", "TWLO": "Twilio", "ZM": "Zoom", "HIMS": "Hims & Hers",
+    "OSCR": "Oscar Health", "TDOC": "Teladoc", "BYND": "Beyond Meat", "PTON": "Peloton",
+    "F": "Ford", "GM": "General Motors", "T": "AT&T", "INTC": "Intel", "AMD": "AMD", "MU": "Micron",
 }
 
 
@@ -444,6 +472,8 @@ def get_ticker_universe():
         pass
 
     for sym, name in COMMON_ETFS.items():
+        universe.setdefault(sym, name)
+    for sym, name in POPULAR_STOCKS.items():
         universe.setdefault(sym, name)
 
     # Safety net if the web fetch failed entirely.
@@ -1463,7 +1493,7 @@ def evaluate_alerts():
 # The page names (without icons) are what we check below to
 # decide which page's code to run.
 # ---------------------------------------------------------
-PAGES = ["Overview", "Ticker Lookup", "Grade & Value", "Compare", "Discover", "Watchlist",
+PAGES = ["Welcome", "Overview", "Ticker Lookup", "Grade & Value", "Compare", "Discover", "Watchlist",
          "Alerts", "Earnings", "Portfolio Tracker", "Backtester", "Bonds", "Mutual Funds",
          "Macro Data", "Glossary"]
 
@@ -1496,12 +1526,16 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
+    # A CTA button on the Welcome page can jump the menu to a section.
+    _manual_nav = st.session_state.pop("nav_to", None)
     page = option_menu(
         menu_title=None,                       # no title = more compact
         options=PAGES,
-        icons=["house", "search", "clipboard-check", "arrow-left-right", "binoculars", "star",
+        icons=["stars", "house", "search", "clipboard-check", "arrow-left-right", "binoculars", "star",
                "bell", "calendar-event", "briefcase", "graph-up", "bank", "collection", "globe", "book"],  # Bootstrap icon names
         default_index=0,
+        manual_select=_manual_nav,
+        key="main_menu",
         styles={
             "container": {"padding": "4px 0", "background-color": P["sidebar"],
                           "border-radius": "0"},
@@ -1556,12 +1590,14 @@ with st.sidebar:
 # The current page's name is shown as the title at the top of
 # the main area (the brand/logo now lives in the sidebar).
 # -------------------------------------------------------------
-st.markdown(
-    f"<div style=\"font-family:'Fraunces',serif; font-size:38px; font-weight:600; "
-    f"color:{P['text']}; letter-spacing:0.2px; line-height:1.1; margin:0 0 6px; "
-    f"padding-bottom:10px; border-bottom:1px solid {P['border']};\">{page}</div>",
-    unsafe_allow_html=True,
-)
+# The Welcome page renders its own hero, so skip the standard title there.
+if page != "Welcome":
+    st.markdown(
+        f"<div style=\"font-family:'Fraunces',serif; font-size:38px; font-weight:600; "
+        f"color:{P['text']}; letter-spacing:0.2px; line-height:1.1; margin:0 0 6px; "
+        f"padding-bottom:10px; border-bottom:1px solid {P['border']};\">{page}</div>",
+        unsafe_allow_html=True,
+    )
 
 # Check alert rules once per session (or after a refresh) and
 # show a banner on every page if any are currently triggered.
@@ -1579,11 +1615,72 @@ if _triggered:
 
 
 # ===========================================================
+# PAGE: WELCOME — an in-app landing / hero screen.
+# ===========================================================
+if page == "Welcome":
+    st.markdown(
+        f"""
+        <div style="text-align:center; padding:22px 0 6px;">
+          <svg width="64" height="64" viewBox="0 0 64 64" aria-hidden="true" style="margin-bottom:6px;">
+            <path d="M18 43 A14 14 0 0 1 46 43 Z" fill="{ACCENT}"/>
+            <g stroke="{ACCENT}" stroke-width="4.4" stroke-linecap="round">
+              <line x1="11" y1="43" x2="53" y2="43"/><line x1="32" y1="8" x2="32" y2="16"/>
+              <line x1="15" y1="15" x2="20" y2="22"/><line x1="49" y1="15" x2="44" y2="22"/>
+              <line x1="7" y1="30" x2="14" y2="33"/><line x1="57" y1="30" x2="50" y2="33"/>
+            </g>
+          </svg>
+          <div style="font-family:'Fraunces',serif; font-size:54px; font-weight:600; color:{P['text']}; line-height:1;">Lumen</div>
+          <div style="font-size:17px; color:{P['muted']}; margin-top:8px;">
+            Research, grade, and track stocks &amp; ETFs — in plain English.
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+    cta1, cta2, cta3 = st.columns(3)
+    if cta1.button("Grade a stock", use_container_width=True):
+        st.session_state["nav_to"] = PAGES.index("Grade & Value")
+        st.rerun()
+    if cta2.button("See the overview", use_container_width=True):
+        st.session_state["nav_to"] = PAGES.index("Overview")
+        st.rerun()
+    if cta3.button("Discover ideas", use_container_width=True):
+        st.session_state["nav_to"] = PAGES.index("Discover")
+        st.rerun()
+
+    st.divider()
+
+    # Feature highlights.
+    features = [
+        ("Grade &amp; value", "An A–F scorecard, fair value, and a Buy/Hold/Sell signal for any stock."),
+        ("Compare", "Put 2–5 tickers head-to-head across metrics, grade, and price."),
+        ("Discover", "Surface under-the-radar names with a data-driven signal."),
+        ("Portfolio", "Track holdings live — value, gain/loss, allocation, and diversification."),
+        ("Backtester", "Test moving-average or RSI strategies against buy &amp; hold."),
+        ("Bonds &amp; macro", "The yield curve and key economic indicators, explained simply."),
+    ]
+    fcols = st.columns(3)
+    for i, (title, blurb) in enumerate(features):
+        with fcols[i % 3]:
+            st.markdown(
+                f"<div style='background:{P['card']}; border:1px solid {P['border']}; border-radius:12px; "
+                f"padding:14px 16px; margin-bottom:12px; min-height:104px;'>"
+                f"<div style=\"font-family:'Fraunces',serif; font-size:17px; font-weight:600; color:{P['text']};\">{title}</div>"
+                f"<div style='font-size:13px; color:{P['muted']}; margin-top:5px; line-height:1.5;'>{blurb}</div></div>",
+                unsafe_allow_html=True,
+            )
+
+    st.caption("Educational tool, not financial advice. Use the menu on the left to explore any section.")
+
+
+# ===========================================================
 # PAGE 0: OVERVIEW / HOME
 # A landing page with two glances: your portfolio snapshot at
 # the top, and key macro signals at the bottom.
 # ===========================================================
-if page == "Overview":
+elif page == "Overview":
     st.caption("Your portfolio and key market signals at a glance.")
 
     # -------------------------------------------------------
