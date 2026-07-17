@@ -131,7 +131,7 @@ a, a:visited {{ color:{P['accent']}; }}
 
 # Bump this whenever you publish an update, so you can confirm the
 # live site is running your latest version (it shows in the sidebar).
-APP_VERSION = "2.3"
+APP_VERSION = "2.4"
 
 # Timestamp for when data was last refreshed (shown in the sidebar).
 st.session_state.setdefault("data_refreshed_at", datetime.now())
@@ -1618,29 +1618,74 @@ if _triggered:
 # PAGE: WELCOME — an in-app landing / hero screen.
 # ===========================================================
 if page == "Welcome":
+    # Styles mirror the public landing page (lumeninvest.netlify.app) so the
+    # app and the marketing site read as one product. Written as a plain
+    # string with __TOKENS__ (not an f-string) because CSS braces would
+    # otherwise need escaping on every rule.
+    _welcome_css = """
+    <style>
+      .lu-hero{position:relative; overflow:hidden; min-height:330px; text-align:center; padding:30px 0 0;}
+      .lu-sun{position:absolute; left:50%; transform:translateX(-50%); bottom:0;
+        width:min(760px,145%); height:300px; z-index:0; pointer-events:none;}
+      .lu-in{position:relative; z-index:1;
+        text-shadow:0 0 10px __BG__, 0 0 22px __BG__, 0 0 40px __BG__;}
+      .lu-eyebrow{font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:.24em;
+        text-transform:uppercase; color:__ACCENT__; margin-bottom:16px;}
+      .lu-h1{font-family:'Fraunces',serif; font-size:46px; font-weight:600; line-height:1.05;
+        color:__TEXT__; margin:0 auto; max-width:16ch;}
+      .lu-lede{font-size:16px; color:__MUTED__; max-width:46ch; margin:16px auto 0; line-height:1.6;}
+      .lu-kick{font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:.18em;
+        text-transform:uppercase; color:__ACCENT__; margin-bottom:8px;}
+      .lu-h2{font-family:'Fraunces',serif; font-size:26px; font-weight:600; color:__TEXT__; margin:0 0 4px;}
+      .lu-sub{font-size:14px; color:__MUTED__; margin-bottom:16px; max-width:54ch;}
+      .lu-feat{background:__CARD__; border:1px solid __BORDER__; border-radius:14px;
+        padding:16px 18px; margin-bottom:12px; min-height:122px;}
+      .lu-feat h4{font-family:'Fraunces',serif; font-size:16px; font-weight:600; color:__TEXT__; margin:0 0 5px;}
+      .lu-feat p{font-size:12.5px; color:__MUTED__; margin:0; line-height:1.5;}
+      .lu-step{display:flex; gap:13px; align-items:flex-start; margin-bottom:16px;}
+      .lu-step .n{font-family:'IBM Plex Mono',monospace; font-size:12px; color:__ACCENT__;
+        border:1px solid __BORDER__; border-radius:999px; min-width:27px; height:27px;
+        display:flex; align-items:center; justify-content:center; flex:none;}
+      .lu-step h4{font-family:'Fraunces',serif; font-size:15px; font-weight:600; color:__TEXT__; margin:3px 0 3px;}
+      .lu-step p{font-size:12.5px; color:__MUTED__; margin:0; line-height:1.5;}
+    </style>
+    """
+    for _tok, _val in (
+        ("__BG__", P["page"]), ("__ACCENT__", ACCENT), ("__TEXT__", P["text"]),
+        ("__MUTED__", P["muted"]), ("__CARD__", P["card"]), ("__BORDER__", P["border"]),
+    ):
+        _welcome_css = _welcome_css.replace(_tok, _val)
+    st.markdown(_welcome_css, unsafe_allow_html=True)
+
+    # Hero: the same sunrise that anchors the landing page.
     st.markdown(
         f"""
-        <div style="text-align:center; padding:22px 0 6px;">
-          <svg width="64" height="64" viewBox="0 0 64 64" aria-hidden="true" style="margin-bottom:6px;">
-            <path d="M18 43 A14 14 0 0 1 46 43 Z" fill="{ACCENT}"/>
-            <g stroke="{ACCENT}" stroke-width="4.4" stroke-linecap="round">
-              <line x1="11" y1="43" x2="53" y2="43"/><line x1="32" y1="8" x2="32" y2="16"/>
-              <line x1="15" y1="15" x2="20" y2="22"/><line x1="49" y1="15" x2="44" y2="22"/>
-              <line x1="7" y1="30" x2="14" y2="33"/><line x1="57" y1="30" x2="50" y2="33"/>
+        <div class="lu-hero">
+          <svg class="lu-sun" viewBox="0 0 680 340" preserveAspectRatio="xMidYMax meet" aria-hidden="true">
+            <g stroke="{ACCENT}" stroke-width="4" stroke-linecap="round" opacity="0.5">
+              <line x1="340" y1="70" x2="340" y2="120"/>
+              <line x1="250" y1="90" x2="282" y2="132"/><line x1="430" y1="90" x2="398" y2="132"/>
+              <line x1="176" y1="140" x2="220" y2="172"/><line x1="504" y1="140" x2="460" y2="172"/>
+              <line x1="120" y1="206" x2="172" y2="228"/><line x1="560" y1="206" x2="508" y2="228"/>
             </g>
+            <path d="M210 300 A130 130 0 0 1 470 300 Z" fill="{ACCENT}" opacity="0.20"/>
+            <path d="M250 300 A90 90 0 0 1 430 300 Z" fill="{ACCENT}" opacity="0.40"/>
+            <path d="M285 300 A55 55 0 0 1 395 300 Z" fill="{ACCENT}" opacity="0.9"/>
+            <line x1="20" y1="300" x2="660" y2="300" stroke="{ACCENT}" stroke-width="1.5" opacity="0.35"/>
           </svg>
-          <div style="font-family:'Fraunces',serif; font-size:54px; font-weight:600; color:{P['text']}; line-height:1;">Lumen</div>
-          <div style="font-size:17px; color:{P['muted']}; margin-top:8px;">
-            Research, grade, and track stocks &amp; ETFs — in plain English.
+          <div class="lu-in">
+            <div class="lu-eyebrow">Personal equity research</div>
+            <div class="lu-h1">Judge a stock in ten seconds.</div>
+            <div class="lu-lede">Lumen grades any stock or ETF, estimates what it&#39;s worth,
+              and tracks your portfolio — all in plain English.</div>
           </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
     cta1, cta2, cta3 = st.columns(3)
-    if cta1.button("Grade a stock", use_container_width=True):
+    if cta1.button("Grade a stock", use_container_width=True, type="primary"):
         st.session_state["nav_to"] = PAGES.index("Grade & Value")
         st.rerun()
     if cta2.button("See the overview", use_container_width=True):
@@ -1650,29 +1695,68 @@ if page == "Welcome":
         st.session_state["nav_to"] = PAGES.index("Discover")
         st.rerun()
 
-    st.divider()
+    st.markdown("<div style='height:34px'></div>", unsafe_allow_html=True)
 
-    # Feature highlights.
+    # ---- What's inside: eight features, matching the landing page. ----
+    st.markdown(
+        "<div class='lu-kick'>What&#39;s inside</div>"
+        "<div class='lu-h2'>A research desk, not a spreadsheet.</div>"
+        "<div class='lu-sub'>Fourteen tools that turn raw market data into something you can "
+        "actually reason about.</div>",
+        unsafe_allow_html=True,
+    )
+
     features = [
-        ("Grade &amp; value", "An A–F scorecard, fair value, and a Buy/Hold/Sell signal for any stock."),
-        ("Compare", "Put 2–5 tickers head-to-head across metrics, grade, and price."),
-        ("Discover", "Surface under-the-radar names with a data-driven signal."),
-        ("Portfolio", "Track holdings live — value, gain/loss, allocation, and diversification."),
-        ("Backtester", "Test moving-average or RSI strategies against buy &amp; hold."),
-        ("Bonds &amp; macro", "The yield curve and key economic indicators, explained simply."),
+        ("Grade &amp; value", "An A–F scorecard across five categories, a fair-value estimate, and a Buy/Hold/Sell signal."),
+        ("Compare", "Put 2–5 tickers head-to-head — metrics, grade, and a one-year price race."),
+        ("Discover", "Surface under-the-radar names with a data-driven signal, ranked best to worst."),
+        ("Portfolio", "Value your holdings live, with allocation, diversification, and gain/loss."),
+        ("Backtester", "Test moving-average or RSI strategies against buy &amp; hold and a benchmark."),
+        ("Bonds &amp; macro", "The Treasury yield curve and key economic indicators, explained simply."),
+        ("Watchlist &amp; alerts", "Track names you&#39;re eyeing and get flagged when price or signal moves."),
+        ("Earnings", "Upcoming report dates, analyst estimates, and how past quarters landed."),
     ]
-    fcols = st.columns(3)
+    fcols = st.columns(4)
     for i, (title, blurb) in enumerate(features):
-        with fcols[i % 3]:
+        with fcols[i % 4]:
             st.markdown(
-                f"<div style='background:{P['card']}; border:1px solid {P['border']}; border-radius:12px; "
-                f"padding:14px 16px; margin-bottom:12px; min-height:104px;'>"
-                f"<div style=\"font-family:'Fraunces',serif; font-size:17px; font-weight:600; color:{P['text']};\">{title}</div>"
-                f"<div style='font-size:13px; color:{P['muted']}; margin-top:5px; line-height:1.5;'>{blurb}</div></div>",
+                f"<div class='lu-feat'><h4>{title}</h4><p>{blurb}</p></div>",
                 unsafe_allow_html=True,
             )
 
-    st.caption("Educational tool, not financial advice. Use the menu on the left to explore any section.")
+    st.markdown("<div style='height:22px'></div>", unsafe_allow_html=True)
+
+    # ---- How it works: three plain-English steps. ----
+    st.markdown(
+        "<div class='lu-kick'>How it works</div>"
+        "<div class='lu-h2'>Three steps, no jargon.</div>"
+        "<div class='lu-sub'>You don&#39;t need to know what a P/E ratio is to start. "
+        "Lumen explains every number it shows you.</div>",
+        unsafe_allow_html=True,
+    )
+
+    steps = [
+        ("1", "Search any ticker",
+         "Type a symbol like AAPL, or search by company name. Stocks, ETFs, and funds all work."),
+        ("2", "Read the grade",
+         "An A–F letter built from five categories — valuation, profitability, growth, financial health, and momentum."),
+        ("3", "Decide with context",
+         "Fair value, analyst targets, and a Buy/Hold/Sell signal — each with a &quot;why&quot; you can open up."),
+    ]
+    scols = st.columns(3)
+    for i, (num, title, blurb) in enumerate(steps):
+        with scols[i]:
+            st.markdown(
+                f"<div class='lu-step'><div class='n'>{num}</div>"
+                f"<div><h4>{title}</h4><p>{blurb}</p></div></div>",
+                unsafe_allow_html=True,
+            )
+
+    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+    st.caption(
+        "Educational tool, not financial advice. Data comes from public sources and can be "
+        "delayed or wrong — always do your own research. Use the menu on the left to explore any section."
+    )
 
 
 # ===========================================================
