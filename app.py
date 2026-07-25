@@ -1846,6 +1846,60 @@ with st.sidebar:
     # the app, and the theme CSS at the top re-renders in that mode.
     st.radio("Appearance", ["Dark", "Light"], key="theme", horizontal=True)
 
+    # -----------------------------------------------------------
+    # DATA SOURCE STATUS
+    # Diagnostics for when the hosted site can't load prices. It
+    # reports whether each key is *configured* and which source
+    # actually answers — never the key values themselves.
+    # -----------------------------------------------------------
+    with st.expander("Data source status"):
+        st.markdown(
+            f"- FMP key: **{'configured' if FMP_API_KEY else 'MISSING'}**\n"
+            f"- Twelve Data key: **{'configured' if TWELVEDATA_API_KEY else 'not set'}** (optional)\n"
+            f"- Multi-user mode: **{'on' if MULTIUSER else 'off'}**"
+        )
+        if not FMP_API_KEY:
+            st.warning(
+                "No FMP key found. On the hosted site Yahoo is blocked, so without this key "
+                "almost nothing will load. Add FMP_API_KEY under Settings → Secrets."
+            )
+        if st.button("Test data sources", key="diag_test"):
+            with st.spinner("Trying each source with AAPL…"):
+                # 1) Yahoo — works locally, blocked on Streamlit Cloud's IPs.
+                try:
+                    _n = len(yf.Ticker("AAPL").history(period="5d"))
+                    st.write(f"Yahoo (yfinance): **{'ok' if _n else 'no rows'}** ({_n} rows)")
+                except Exception as e:
+                    st.write(f"Yahoo (yfinance): **failed** — {type(e).__name__}")
+
+                # 2) FMP — the hosted site's main source.
+                if FMP_API_KEY:
+                    try:
+                        _r = requests.get(f"{FMP_BASE}/quote",
+                                          params={"symbol": "AAPL", "apikey": FMP_API_KEY}, timeout=15)
+                        _j = _r.json()
+                        if _r.status_code == 200 and isinstance(_j, list) and _j:
+                            st.write(f"FMP quote: **ok** (AAPL ${_j[0].get('price')})")
+                        else:
+                            _msg = _j.get("Error Message") if isinstance(_j, dict) else str(_j)[:120]
+                            st.write(f"FMP quote: **failed** — HTTP {_r.status_code}: {_msg}")
+                    except Exception as e:
+                        st.write(f"FMP quote: **failed** — {type(e).__name__}")
+                else:
+                    st.write("FMP quote: **skipped** (no key)")
+
+                # 3) Stooq — keyless fallback for history.
+                _s = _history_from_stooq("AAPL")
+                st.write(f"Stooq history: **{'ok' if _s is not None else 'failed'}**"
+                         + (f" ({len(_s)} rows)" if _s is not None else ""))
+
+                # 4) The real chain the app uses.
+                _i, _h, _err = get_stock_data("AAPL")
+                if _err:
+                    st.error(f"Combined lookup failed: {_err}")
+                else:
+                    st.success(f"Combined lookup ok — AAPL ${_h['Close'].iloc[-1]:,.2f}, {len(_h)} rows.")
+
     st.caption(f"Lumen v{APP_VERSION}")
 
 
