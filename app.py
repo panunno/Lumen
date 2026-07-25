@@ -37,6 +37,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 import os
 import io
+import html
 import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime
@@ -79,6 +80,18 @@ P = PALETTES[THEME]
 ACCENT = P["accent"]
 CARD_BG = P["card"]
 CARD_BORDER = P["border"]
+# A faint wash of the accent, used for selected nav items and soft highlights
+# ("Daybreak Journal" restyle). Derived per-theme so both modes stay legible.
+ACCENT_SOFT = "rgba(201,162,75,0.12)" if THEME == "Dark" else "rgba(138,93,40,0.10)"
+
+# The Overview's one "dawn" moment: night at the top fading to first light at
+# the horizon. Dark mode goes through a dusk plum into ember; light mode is the
+# same idea in warm sand, since plum on cream would just look bruised.
+DAWN_GRADIENT = (
+    "linear-gradient(180deg, rgba(20,17,12,0) 0%, rgba(58,34,48,0.40) 52%, rgba(192,122,58,0.30) 100%)"
+    if THEME == "Dark" else
+    "linear-gradient(180deg, rgba(244,239,228,0) 0%, rgba(214,178,120,0.30) 52%, rgba(198,138,58,0.34) 100%)"
+)
 
 st.markdown(
     f"""<style>
@@ -89,7 +102,7 @@ st.markdown(
 [data-testid="stHeader"] {{ background:transparent; }}
 .block-container {{ padding-top:2.4rem; padding-bottom:3rem; }}
 [data-testid="stMetric"], [data-testid="stExpander"], [data-testid="stExpander"] details {{ overflow:hidden; }}
-[data-testid="stAlert"] {{ background:{P['card']}; border:1px solid {P['border']}; border-radius:12px; }}
+[data-testid="stAlert"] {{ background:{P['card']}; border:1px solid {P['border']}; border-radius:14px; }}
 [data-testid="stAlert"] p, [data-testid="stAlert"] div {{ color:{P['text']}; }}
 /* Force readable text on our backgrounds (our CSS loads after Streamlit's,
    so these win on equal specificity without overriding inline colors). */
@@ -99,21 +112,104 @@ st.markdown(
 .stRadio label, .stCheckbox label, .stExpander summary,
 [data-testid="stExpander"] summary, [data-testid="stExpander"] p {{ color:{P['text']}; }}
 [data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p {{ color:{P['muted']}; }}
-[data-testid="stExpander"], [data-testid="stExpander"] details {{ border:1px solid {P['border']}; border-radius:12px; background:{P['card']}; }}
+[data-testid="stExpander"], [data-testid="stExpander"] details {{ border:1px solid {P['border']}; border-radius:14px; background:{P['card']}; }}
 [data-testid="stTabs"] button {{ color:{P['muted']}; }}
 [data-testid="stTabs"] button[aria-selected="true"] {{ color:{P['text']}; }}
 h1,h2,h3,h4 {{ font-family:'Fraunces',serif !important; font-weight:600; color:{P['text']} !important; letter-spacing:.2px; }}
 h2 {{ margin-top:.6rem; }} h3 {{ margin-top:.3rem; }}
-[data-testid="stMetric"] {{ background:{P['card']}; border:1px solid {P['border']}; border-radius:12px; padding:14px 16px; }}
+/* Soft-card surfaces (Daybreak Journal): 14px radius, roomier padding. */
+[data-testid="stMetric"] {{ background:{P['card']}; border:1px solid {P['border']}; border-radius:14px; padding:15px 17px; }}
 [data-testid="stMetricValue"] {{ font-family:'IBM Plex Mono',monospace; font-size:1.38rem; font-weight:500; color:{P['text']}; }}
-[data-testid="stMetricLabel"] {{ color:{P['muted']}; }}
+[data-testid="stMetricLabel"] {{ color:{P['muted']}; font-family:'IBM Plex Mono',monospace; font-size:.72rem;
+  letter-spacing:.09em; text-transform:uppercase; }}
 [data-testid="stMetricDelta"] {{ font-family:'IBM Plex Mono',monospace; font-weight:600; }}
-[data-testid="stDataFrame"], [data-testid="stTable"] {{ border:1px solid {P['border']}; border-radius:12px; overflow:hidden; }}
+[data-testid="stDataFrame"], [data-testid="stTable"] {{ border:1px solid {P['border']}; border-radius:14px; overflow:hidden; }}
 hr {{ margin:.9rem 0 1.3rem 0; border-color:{P['border']}; }}
-.stButton > button {{ border-radius:9px; border:1px solid {P['border']}; color:{P['text']}; background:transparent; font-weight:500; }}
+.stButton > button {{ border-radius:10px; border:1px solid {P['border']}; color:{P['text']}; background:transparent; font-weight:500; }}
 .stButton > button:hover {{ border-color:{P['accent']}; color:{P['accent']}; }}
-[data-testid="stSidebar"] {{ background:{P['sidebar']}; }}
-[data-testid="stSidebar"] p, [data-testid="stSidebar"] label, [data-testid="stSidebar"] span {{ color:{P['text']}; }}
+/* Primary buttons get the gold fill (like the landing page CTAs). */
+.stButton > button[kind="primary"], .stButton > button[data-testid="stBaseButton-primary"] {{
+  background:{P['accent']}; border-color:{P['accent']}; color:{P['accent_text']}; }}
+.stButton > button[kind="primary"]:hover {{ filter:brightness(1.07); color:{P['accent_text']}; }}
+/* Editorial grammar utilities: kicker (mono, uppercase, gold) and dek. */
+.lu-kick {{ font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:.18em;
+  text-transform:uppercase; color:{P['accent']}; }}
+.lu-dek {{ color:{P['muted']}; font-size:14.5px; max-width:60ch; line-height:1.55; }}
+/* Ledger rows — lists (Watchlist, Compare) read as entries in a book
+   rather than a spreadsheet. Numbers stay monospaced and column-aligned. */
+.lu-ledger {{ border:1px solid {P['border']}; border-radius:12px; overflow:hidden; margin:4px 0 10px; }}
+.lu-lrow {{ display:grid; grid-template-columns:36px 1.3fr .85fr .85fr .85fr .55fr;
+  align-items:center; gap:10px; padding:9px 14px; border-bottom:1px solid {P['border']}; font-size:13px; }}
+.lu-lrow:last-child {{ border-bottom:none; }}
+.lu-lhead {{ background:{P['sidebar']}; font-family:'IBM Plex Mono',monospace; font-size:9.5px;
+  letter-spacing:.15em; text-transform:uppercase; color:{P['muted']}; padding:7px 14px; }}
+.lu-lno {{ font-family:'IBM Plex Mono',monospace; font-size:10.5px; color:{P['muted']}; }}
+.lu-ltick {{ font-family:'Fraunces',serif; font-weight:600; font-size:14.5px; color:{P['text']}; }}
+.lu-lsub {{ font-size:10.5px; color:{P['muted']}; display:block; margin-top:1px;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+.lu-lnum {{ font-family:'IBM Plex Mono',monospace; font-variant-numeric:tabular-nums; }}
+.lu-lgrade {{ font-family:'Fraunces',serif; font-weight:600; font-size:17px;
+  color:{P['accent']}; text-align:right; }}
+.lu-lfoot {{ display:flex; gap:22px; flex-wrap:wrap; font-family:'IBM Plex Mono',monospace;
+  font-size:11.5px; color:{P['muted']}; margin:0 0 6px; }}
+.lu-lfoot b {{ color:{P['text']}; font-weight:500; }}
+@media (max-width:640px) {{
+  .lu-lrow {{ grid-template-columns:28px 1.2fr .9fr .6fr; }}
+  .lu-lrow .lu-hide-sm {{ display:none; }}
+}}
+/* Compare verdict cards. One card per contender; the winner is outlined and
+   badged with the criterion it actually won on — never a vague "winner". */
+.lu-cmp {{ position:relative; background:{P['card']}; border:1px solid {P['border']};
+  border-radius:14px; padding:14px 16px; margin-top:10px; }}
+.lu-cmp.lu-win {{ border-color:{P['accent']}; }}
+.lu-cmp .lu-crown {{ position:absolute; top:-9px; left:14px; font-family:'IBM Plex Mono',monospace;
+  font-size:8.5px; letter-spacing:.13em; text-transform:uppercase; background:{P['accent']};
+  color:{P['accent_text']}; border-radius:4px; padding:2px 8px; white-space:nowrap; }}
+.lu-cmp .lu-cmp-top {{ display:flex; justify-content:space-between; align-items:baseline; gap:8px; }}
+.lu-cmp .lu-cmp-sym {{ font-family:'Fraunces',serif; font-size:17px; font-weight:600; color:{P['text']}; }}
+.lu-cmp .lu-cmp-gr {{ font-family:'Fraunces',serif; font-size:22px; font-weight:600; color:{P['accent']}; }}
+.lu-cmp .lu-cmp-nm {{ font-size:10.5px; color:{P['muted']}; margin:1px 0 8px;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+.lu-cmp .lu-cmp-row {{ display:flex; justify-content:space-between; gap:8px; font-size:11.5px;
+  color:{P['muted']}; border-bottom:1px dotted {P['border']}; padding:5px 0; }}
+.lu-cmp .lu-cmp-row:last-child {{ border-bottom:none; }}
+.lu-cmp .lu-cmp-row b {{ font-family:'IBM Plex Mono',monospace; color:{P['text']}; font-weight:500; }}
+/* The dawn block — Overview only. The sunrise sits on the block's bottom
+   edge so whatever comes next reads as sitting on the horizon line. */
+.lu-dawn {{ position:relative; overflow:hidden; border:1px solid {P['border']}; border-radius:16px;
+  background:{DAWN_GRADIENT}; padding:30px 28px 170px; margin:2px 0 14px; }}
+/* The viewBox is deliberately wider than the band (1100x260 vs. a ~4:1 box) so
+   `slice` crops the sides rather than the top — cropping the top would lop the
+   rays off. The horizon line runs the full viewBox width for the same reason. */
+.lu-dawn .lu-sunband {{ position:absolute; left:50%; transform:translateX(-50%); bottom:0;
+  width:min(1040px,160%); height:270px; pointer-events:none; z-index:0; }}
+.lu-dawn .lu-greet {{ position:relative; z-index:1; font-family:'IBM Plex Mono',monospace;
+  font-size:10.5px; letter-spacing:.2em; text-transform:uppercase; color:{P['accent']};
+  text-shadow:0 0 10px {P['page']}, 0 0 20px {P['page']}; }}
+.lu-dawn .lu-dawn-h {{ position:relative; z-index:1; font-family:'Fraunces',serif; font-size:29px;
+  font-weight:600; color:{P['text']}; line-height:1.15; margin:10px 0 0; max-width:26ch;
+  text-shadow:0 0 10px {P['page']}, 0 0 22px {P['page']}, 0 0 40px {P['page']}; }}
+.lu-dawn .lu-dawn-sub {{ position:relative; z-index:1; font-family:'IBM Plex Mono',monospace;
+  font-size:12px; color:{P['muted']}; margin-top:9px;
+  text-shadow:0 0 10px {P['page']}, 0 0 22px {P['page']}, 0 0 40px {P['page']}; }}
+/* Sidebar. Streamlit nests several wrapper divs inside the sidebar <section>,
+   and each inherits a background from config.toml (which is pinned to dark).
+   Colouring only the outer section leaves those wrappers painting dark over
+   it in Light mode, so set them all explicitly. */
+[data-testid="stSidebar"],
+[data-testid="stSidebar"] > div,
+[data-testid="stSidebarContent"],
+[data-testid="stSidebarUserContent"],
+[data-testid="stSidebarHeader"],
+[data-testid="stSidebarNav"],
+section[data-testid="stSidebar"] > div:first-child {{ background:{P['sidebar']} !important; }}
+[data-testid="stSidebar"] p, [data-testid="stSidebar"] label, [data-testid="stSidebar"] span,
+[data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {{ color:{P['text']}; }}
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"],
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"] p {{ color:{P['muted']}; }}
+/* Sidebar collapse arrow + resize handle also read the dark theme. */
+[data-testid="stSidebarCollapseButton"] svg,
+[data-testid="stSidebarCollapsedControl"] svg {{ color:{P['text']} !important; fill:{P['text']} !important; }}
 /* The nav-menu is a component iframe; its default dark background
    shows as black corners behind the rounded menu box. Make it blend. */
 [data-testid="stSidebar"] iframe {{ background:transparent !important; }}
@@ -131,7 +227,7 @@ a, a:visited {{ color:{P['accent']}; }}
 
 # Bump this whenever you publish an update, so you can confirm the
 # live site is running your latest version (it shows in the sidebar).
-APP_VERSION = "2.4"
+APP_VERSION = "2.5"
 
 # Timestamp for when data was last refreshed (shown in the sidebar).
 st.session_state.setdefault("data_refreshed_at", datetime.now())
@@ -1119,11 +1215,92 @@ def grade_stock(info, history):
 
 
 # ---------------------------------------------------------
+# SHARED HELPER: WRITE THE GRADE AS A SENTENCE
+# Turns the category scores into a one-line plain-English
+# reading plus the numbers behind it ("dek"). Both live in the
+# "Why this grade?" panel, so the claim and its evidence are
+# always read together.
+#
+# Ground rules, deliberately narrow:
+#   * It only ever describes Lumen's OWN scores. It never
+#     predicts a price, never says buy or sell, and never
+#     claims anything the numbers don't say.
+#   * The reading is always followed by the scores behind it,
+#     so the reader can check the wording against the data.
+#   * If too few categories scored (common for ETFs), it
+#     returns None and the panel simply shows the scores
+#     rather than inventing a characterisation.
+# ---------------------------------------------------------
+def grade_story(cats, overall):
+    """Return (reading, dek) describing a grade, or (None, None) if unclear."""
+    scored = {k: v for k, v in (cats or {}).items() if v is not None}
+    # Fewer than three categories isn't enough to characterise anything.
+    if overall is None or len(scored) < 3:
+        return None, None
+
+    letter = score_to_letter(overall)
+    valuation = scored.get("Valuation")
+    quality_scores = [scored[k] for k in ("Profitability", "Growth", "Financial Health") if k in scored]
+    quality = sum(quality_scores) / len(quality_scores) if quality_scores else None
+
+    best = max(scored, key=scored.get)
+    worst = min(scored, key=scored.get)
+    spread = scored[best] - scored[worst]
+
+    # "Strong fundamentals, priced richly" must not paper over a different
+    # weakness: PLTR can score 100 on profitability with momentum at 0, and
+    # that headline would read as reassurance the numbers don't support. So
+    # the framing is only allowed when valuation is the *only* weak score.
+    others_weakest = min(
+        [v for k, v in scored.items() if k != "Valuation"], default=None
+    )
+    only_valuation_is_weak = others_weakest is not None and others_weakest >= 50
+
+    # The two patterns worth naming outright, because they're the ones a
+    # beginner most often misreads: a good business that's priced richly,
+    # and a cheap price that reflects a weak business.
+    if (valuation is not None and quality is not None
+            and quality >= 70 and valuation < 35 and only_valuation_is_weak):
+        reading = "Strong fundamentals, priced richly."
+    elif valuation is not None and quality is not None and valuation >= 70 and quality < 45:
+        reading = "Priced cheaply, with soft fundamentals behind it."
+    elif min(scored.values()) >= 70:
+        reading = "Scores well across every category."
+    elif max(scored.values()) < 45:
+        reading = "Scores poorly across the board."
+    elif spread < 25:
+        reading = "Middling scores, no clear standout."
+    else:
+        reading = f"Strongest on {best.lower()}, weakest on {worst.lower()}."
+
+    # Kept short deliberately: this sits on one line under the reading.
+    dek = (
+        f"{best} {scored[best]:.0f} of 100, {worst} {scored[worst]:.0f} — "
+        f"{letter} across {len(scored)} categories."
+    )
+    if len(scored) < 5:
+        missing = [k for k in cats if cats[k] is None]
+        dek += f" ({', '.join(missing)} couldn't be scored from the available data.)"
+    return reading, dek
+
+
+# ---------------------------------------------------------
 # SHARED HELPER: RENDER A GRADE BREAKDOWN
 # Shows each category's metrics with a colored dot indicating
 # whether each helped (🟢), was so-so (🟡), hurt (🔴), or was
 # missing (⚪). Used by both Grade & Value and the Watchlist.
 # ---------------------------------------------------------
+def score_dot_color(sub):
+    """The app's shared red/amber/green/grey language for a 0-100 subscore."""
+    if sub is None:
+        return "#8a909a"
+    if sub >= 66:
+        return "#5fae8a"
+    if sub >= 40:
+        return "#d9a05b"
+    return "#cf6b6b"
+
+
 def show_grade_breakdown(cats, details):
     for cat_name, rows in details.items():
         cat_score = cats.get(cat_name)
@@ -1131,15 +1308,7 @@ def show_grade_breakdown(cats, details):
         header += f" ({cat_score:.0f}/100)" if cat_score is not None else " (N/A)"
         st.markdown(f"**{header}**")
         for label, shown, sub in rows:
-            if sub is None:
-                color = "#8a909a"
-            elif sub >= 66:
-                color = "#5fae8a"
-            elif sub >= 40:
-                color = "#d9a05b"
-            else:
-                color = "#cf6b6b"
-            dot = f"<span style='color:{color}'>&#9679;</span>"
+            dot = f"<span style='color:{score_dot_color(sub)}'>&#9679;</span>"
             sub_txt = f"{sub:.0f}/100" if sub is not None else "no data"
             st.markdown(
                 f"&nbsp;&nbsp;{dot} **{label}**: <span class='lu-mono'>{shown}</span> &nbsp;·&nbsp; "
@@ -1271,6 +1440,62 @@ def show_signal(info, history, overall_score):
 
 
 # ---------------------------------------------------------
+# SHARED HELPER: THE GRADE, AS A BADGE + "WHY" PANEL
+# Mirrors show_signal() above so the two read as a pair. The
+# headline sentence lives on the page; the reasoning behind it
+# is tucked into an expander, the same way the signal explains
+# itself. The badge stays visible so the headline is never a
+# claim without its grade attached.
+# ---------------------------------------------------------
+def show_grade_reading(cats, overall, reading=None, dek=None):
+    if overall is None:
+        return
+    letter = score_to_letter(overall)
+    color = score_dot_color(overall)
+    st.markdown(
+        f"<div style='display:inline-flex; align-items:center; gap:10px; "
+        f"background:{P['card']}; border:1px solid {color}; border-radius:10px; "
+        f"padding:8px 14px; margin:2px 0 6px;'>"
+        f"<span style='font-size:11px; letter-spacing:1.5px; color:{P['muted']};'>LUMEN GRADE</span>"
+        f"<span style='font-size:18px; font-weight:600; color:{color};'>{letter}</span>"
+        f"<span class='lu-mono' style='font-size:12px; color:{P['muted']};'>· {overall:.0f}/100</span>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+    with st.expander("Why this grade?"):
+        # The plain-English reading first, then the numbers that produced it,
+        # so the characterisation is never read without its evidence.
+        if reading:
+            st.markdown(
+                f"<div style=\"font-family:'Fraunces',serif; font-size:19px; font-weight:600; "
+                f"color:{P['text']}; line-height:1.25; margin-bottom:6px;\">{html.escape(reading)}</div>",
+                unsafe_allow_html=True,
+            )
+        if dek:
+            # max-width:none so the summary stays on a single line.
+            st.markdown(
+                f"<div class='lu-dek' style='max-width:none;'>{html.escape(dek)}</div>",
+                unsafe_allow_html=True,
+            )
+        if reading or dek:
+            st.markdown("")
+        for cat_name in ("Valuation", "Profitability", "Growth", "Financial Health", "Momentum"):
+            if cat_name not in (cats or {}):
+                continue
+            sub = cats[cat_name]
+            dot = f"<span style='color:{score_dot_color(sub)}'>&#9679;</span>"
+            sub_txt = f"{sub:.0f}/100" if sub is not None else "no data"
+            st.markdown(
+                f"{dot} **{cat_name}**: <span class='lu-mono' style='color:{P['muted']}'>{sub_txt}</span>",
+                unsafe_allow_html=True,
+            )
+        st.caption(
+            "Lumen's own scoring against healthy benchmarks — not analyst consensus, "
+            "and not financial advice. Full metric-by-metric detail is on the Grade & Value page."
+        )
+
+
+# ---------------------------------------------------------
 # SHARED HELPER: PULL SYMBOLS FROM A YAHOO PREDEFINED SCREEN
 # Yahoo offers ready-made screens (e.g. small-cap gainers,
 # undervalued growth). We grab the tickers from one, with the
@@ -1377,6 +1602,13 @@ def load_watchlist():
             df = pd.read_csv(WATCHLIST_FILE)
             if "Ticker" not in df.columns:
                 return pd.DataFrame(columns=WATCHLIST_COLUMNS)
+            # A saved watchlist with no notes written yet reads back as an
+            # all-empty column, which pandas types as float — the text editor
+            # then refuses it. Force the text columns back to strings.
+            for col in WATCHLIST_COLUMNS:
+                if col not in df.columns:
+                    df[col] = ""
+                df[col] = df[col].fillna("").astype(str)
             return df
     except Exception:
         return pd.DataFrame(columns=WATCHLIST_COLUMNS)
@@ -1528,14 +1760,23 @@ with st.sidebar:
 
     # A CTA button on the Welcome page can jump the menu to a section.
     _manual_nav = st.session_state.pop("nav_to", None)
+    # option_menu only applies its `styles` when the component first mounts, so
+    # switching Appearance would otherwise leave the previous palette's colours
+    # baked into the menu (parchment text on a cream sidebar, unreadable).
+    # Keying by theme forces a remount; seeding default_index with the current
+    # page keeps that remount from bouncing you back to Welcome.
+    try:
+        _current_idx = PAGES.index(st.session_state.get("current_page", PAGES[0]))
+    except ValueError:
+        _current_idx = 0
     page = option_menu(
         menu_title=None,                       # no title = more compact
         options=PAGES,
         icons=["stars", "house", "search", "clipboard-check", "arrow-left-right", "binoculars", "star",
                "bell", "calendar-event", "briefcase", "graph-up", "bank", "collection", "globe", "book"],  # Bootstrap icon names
-        default_index=0,
+        default_index=_current_idx,
         manual_select=_manual_nav,
-        key="main_menu",
+        key=f"main_menu_{THEME}",
         styles={
             "container": {"padding": "4px 0", "background-color": P["sidebar"],
                           "border-radius": "0"},
@@ -1545,16 +1786,24 @@ with st.sidebar:
                 "padding": "8px 10px",
                 "margin": "2px 0",
                 "color": P["text"],
+                "border-left": "2px solid transparent",
+                "border-radius": "8px",
                 "--hover-color": P["border"],
             },
-            # Selected tab: gold background with high-contrast text/icon.
+            # Selected tab (Daybreak Journal): quiet gold — a faint wash and a
+            # gold edge instead of a solid block, like the mockup's sidebar.
             "nav-link-selected": {
-                "background-color": ACCENT,
-                "color": P["accent_text"],
+                "background-color": ACCENT_SOFT,
+                "color": ACCENT,
+                "font-weight": "600",
+                "border-left": f"2px solid {ACCENT}",
+                "border-radius": "0 8px 8px 0",
             },
-            "nav-link-selected .icon": {"color": f"{P['accent_text']} !important"},
+            "nav-link-selected .icon": {"color": f"{ACCENT} !important"},
         },
     )
+    # Remembered so a theme-driven remount can restore this page (see above).
+    st.session_state["current_page"] = page
     st.caption("A beginner-friendly investing dashboard.")
 
     st.divider()
@@ -1592,7 +1841,12 @@ with st.sidebar:
 # -------------------------------------------------------------
 # The Welcome page renders its own hero, so skip the standard title there.
 if page != "Welcome":
+    # Editorial header (Daybreak Journal): a mono kicker with the date above
+    # the serif title, closed by a hairline rule — every page gets the same
+    # quiet "journal" grammar.
+    _today = datetime.now().strftime("%a · %b %d %Y")
     st.markdown(
+        f"<div class='lu-kick' style='margin-bottom:4px;'>Lumen · {_today}</div>"
         f"<div style=\"font-family:'Fraunces',serif; font-size:38px; font-weight:600; "
         f"color:{P['text']}; letter-spacing:0.2px; line-height:1.1; margin:0 0 6px; "
         f"padding-bottom:10px; border-bottom:1px solid {P['border']};\">{page}</div>",
@@ -1765,58 +2019,117 @@ if page == "Welcome":
 # the top, and key macro signals at the bottom.
 # ===========================================================
 elif page == "Overview":
-    st.caption("Your portfolio and key market signals at a glance.")
-
     # -------------------------------------------------------
     # PORTFOLIO SNAPSHOT
-    # Reads your saved holdings and values them live. If you
-    # haven't added any yet, we nudge you to the Portfolio page.
+    # Valued first, so the greeting below can quote real
+    # numbers instead of a generic welcome.
     # -------------------------------------------------------
-    st.header("Your Portfolio")
     holdings = load_portfolio_holdings()
+    ov_total_value = 0.0
+    ov_total_cost = 0.0
+    ov_day_change = 0.0
+    ov_rows = []
+    ov_failed = []
+    ov_day_pct = None
 
+    if not holdings.empty:
+        with st.spinner("Valuing your holdings…"):
+            for _, row in holdings.iterrows():
+                quote = get_portfolio_quote(row["Ticker"])
+                if quote is None:
+                    ov_failed.append(row["Ticker"])
+                    continue
+                shares = row["Shares"]
+                value = shares * quote["price"]
+                cost = shares * row.get("Cost Basis Per Share", 0)
+                ov_total_value += value
+                ov_total_cost += cost
+                ov_day_change += (quote["price"] - quote["prev_close"]) * shares
+                ov_rows.append({"Ticker": row["Ticker"], "Value": value})
+
+    if ov_rows:
+        ov_gain = ov_total_value - ov_total_cost
+        ov_gain_pct = (ov_gain / ov_total_cost * 100) if ov_total_cost > 0 else 0
+        ov_prior = ov_total_value - ov_day_change
+        ov_day_pct = (ov_day_change / ov_prior * 100) if ov_prior else 0
+
+    # -------------------------------------------------------
+    # THE DAWN BLOCK
+    # Lumen's one atmospheric moment — the sunrise greets you
+    # here and on no other page. Every line in it is a fact we
+    # actually hold: the time of day, your real day change, and
+    # how many alert rules are currently triggered.
+    # -------------------------------------------------------
+    _now = datetime.now()
+    _greeting = ("Good morning" if _now.hour < 12
+                 else ("Good afternoon" if _now.hour < 17 else "Good evening"))
+    _n_alerts = len(st.session_state.get("triggered_alerts", []))
+    _plural = "s" if _n_alerts != 1 else ""
+
+    if _n_alerts:
+        _dawn_line = f"{_greeting}. {_n_alerts} alert{_plural} need your eyes."
+    elif ov_rows:
+        _dawn_line = f"{_greeting}. Here's where your money stands."
+    else:
+        _dawn_line = f"{_greeting}. Let's look at the market."
+
+    _facts = []
+    if ov_day_pct is not None:
+        _facts.append(f"Portfolio {ov_day_pct:+.2f}% today")
+    if _n_alerts:
+        _facts.append(f"{_n_alerts} alert{_plural} triggered")
+    if ov_failed:
+        _facts.append(f"{len(ov_failed)} couldn't be priced")
+    if not _facts:
+        _facts.append("No holdings saved yet")
+
+    st.markdown(
+        f"""
+        <div class="lu-dawn">
+          <svg class="lu-sunband" viewBox="0 0 1100 260" preserveAspectRatio="xMidYMax slice" aria-hidden="true">
+            <!-- Seven rays from the sun's centre (550,260), one every 25° from
+                 vertical, each starting at r=172 and ending at r=228 — constant
+                 angle and constant length, so they read as evenly spaced. -->
+            <g stroke="{ACCENT}" stroke-width="4" stroke-linecap="round" opacity="0.40">
+              <line x1="550" y1="88" x2="550" y2="32"/>
+              <line x1="477" y1="104" x2="454" y2="53"/>
+              <line x1="623" y1="104" x2="646" y2="53"/>
+              <line x1="418" y1="149" x2="375" y2="113"/>
+              <line x1="682" y1="149" x2="725" y2="113"/>
+              <line x1="384" y1="216" x2="330" y2="201"/>
+              <line x1="716" y1="216" x2="770" y2="201"/>
+            </g>
+            <path d="M400 260 A150 150 0 0 1 700 260 Z" fill="{ACCENT}" opacity="0.15"/>
+            <path d="M450 260 A100 100 0 0 1 650 260 Z" fill="{ACCENT}" opacity="0.30"/>
+            <path d="M492 260 A58 58 0 0 1 608 260 Z" fill="{ACCENT}" opacity="0.62"/>
+            <line x1="0" y1="260" x2="1100" y2="260" stroke="{ACCENT}" stroke-width="1.5" opacity="0.45"/>
+          </svg>
+          <div class="lu-greet">{_now.strftime('%A · %b %d')}</div>
+          <div class="lu-dawn-h">{html.escape(_dawn_line)}</div>
+          <div class="lu-dawn-sub">{html.escape(' · '.join(_facts))}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.header("Your Portfolio")
     if holdings.empty:
         st.info("No holdings saved yet. Go to the **Portfolio Tracker** page to add some, then they'll show up here.")
-    else:
-        ov_total_value = 0.0
-        ov_total_cost = 0.0
-        ov_day_change = 0.0
-        ov_rows = []
-        ov_failed = []
+    elif ov_rows:
+        o1, o2, o3 = st.columns(3)
+        o1.metric("Total Value", f"${ov_total_value:,.2f}")
+        o2.metric("Today's Change", f"${ov_day_change:,.2f}", f"{ov_day_pct:+.2f}%")
+        o3.metric("Total Gain/Loss", f"${ov_gain:,.2f}", f"{ov_gain_pct:+.2f}%")
 
-        for _, row in holdings.iterrows():
-            quote = get_portfolio_quote(row["Ticker"])
-            if quote is None:
-                ov_failed.append(row["Ticker"])
-                continue
-            shares = row["Shares"]
-            value = shares * quote["price"]
-            cost = shares * row.get("Cost Basis Per Share", 0)
-            ov_total_value += value
-            ov_total_cost += cost
-            ov_day_change += (quote["price"] - quote["prev_close"]) * shares
-            ov_rows.append({"Ticker": row["Ticker"], "Value": value})
+        # A compact allocation donut so the home page feels alive.
+        ov_df = pd.DataFrame(ov_rows)
+        ov_pie = px.pie(ov_df, names="Ticker", values="Value", hole=0.5)
+        ov_pie.update_traces(textinfo="percent+label")
+        style_chart(ov_pie, height=350, xaxis_title="")
+        st.plotly_chart(ov_pie, use_container_width=True)
 
-        if ov_rows:
-            ov_gain = ov_total_value - ov_total_cost
-            ov_gain_pct = (ov_gain / ov_total_cost * 100) if ov_total_cost > 0 else 0
-            ov_prior = ov_total_value - ov_day_change
-            ov_day_pct = (ov_day_change / ov_prior * 100) if ov_prior else 0
-
-            o1, o2, o3 = st.columns(3)
-            o1.metric("Total Value", f"${ov_total_value:,.2f}")
-            o2.metric("Today's Change", f"${ov_day_change:,.2f}", f"{ov_day_pct:+.2f}%")
-            o3.metric("Total Gain/Loss", f"${ov_gain:,.2f}", f"{ov_gain_pct:+.2f}%")
-
-            # A compact allocation donut so the home page feels alive.
-            ov_df = pd.DataFrame(ov_rows)
-            ov_pie = px.pie(ov_df, names="Ticker", values="Value", hole=0.5)
-            ov_pie.update_traces(textinfo="percent+label")
-            style_chart(ov_pie, height=350, xaxis_title="")
-            st.plotly_chart(ov_pie, use_container_width=True)
-
-        if ov_failed:
-            st.caption(f"(Couldn't price: {', '.join(ov_failed)})")
+    if ov_failed:
+        st.caption(f"(Couldn't price: {', '.join(ov_failed)})")
 
     st.divider()
 
@@ -1905,8 +2218,6 @@ elif page == "Ticker Lookup":
             # doesn't crash if a piece of data is missing
             # (this happens sometimes, especially for ETFs).
             # -------------------------------------------------
-            st.header("Fundamentals")
-
             company_name = info.get("longName", info.get("shortName", "N/A"))
             is_etf = info.get("quoteType") == "ETF"
             sector = info.get("sector", "N/A")
@@ -1924,13 +2235,35 @@ elif page == "Ticker Lookup":
             week_high_display = fmt_price(week_high)
             week_low_display = fmt_price(week_low)
 
-            st.subheader(f"{company_name} ({ticker_input})")
+            # -------------------------------------------------
+            # EDITORIAL HEADER
+            # Kicker + company name, in the landing page's grammar.
+            # The plain-English reading of the grade lives in the
+            # "Why this grade?" panel below, next to the scores
+            # that produced it.
+            # -------------------------------------------------
+            _cats_tl, _overall_tl, _ = grade_stock(info, history)
+            _reading, _dek = grade_story(_cats_tl, _overall_tl)
+            _exchange = info.get("fullExchangeName") or info.get("exchange") or ""
+            _kick = " · ".join(x for x in ("Ticker lookup", _exchange, ticker_input) if x)
+            st.markdown(
+                f"<div class='lu-kick'>{html.escape(_kick)}</div>"
+                f"<div style=\"font-family:'Fraunces',serif; font-size:31px; font-weight:600; "
+                f"color:{P['text']}; line-height:1.12; margin:7px 0 6px;\">"
+                f"{html.escape(company_name)}</div>",
+                unsafe_allow_html=True,
+            )
+
             if is_etf:
                 st.caption("This is an ETF (a basket of many holdings), so company-specific metrics like P/E may be blank.")
             else:
-                # Buy/Hold/Sell signal badge (with a "why" breakdown).
-                _, _overall_tl, _ = grade_stock(info, history)
+                # The grade and the signal each explain themselves in a
+                # matching "why" panel, so the page stays uncluttered.
+                show_grade_reading(_cats_tl, _overall_tl, _reading, _dek)
                 show_signal(info, history, _overall_tl)
+
+            st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+            st.header("Fundamentals")
 
             # Lay out the fundamental facts in a clean grid of columns.
             col1, col2, col3 = st.columns(3)
@@ -2579,6 +2912,8 @@ elif page == "Compare":
         cmp_errors = []
         price_series = {}
         cat_rows = []
+        cmp_overall = {}   # ticker -> overall 0-100 score, for the verdict cards
+        cmp_cats = {}      # ticker -> category scores, for the verdict cards
         for ticker in cmp_tickers:
             info, history, error = get_stock_data(ticker)
             if error or history is None or history.empty:
@@ -2595,6 +2930,8 @@ elif page == "Compare":
 
             cats, overall, _ = grade_stock(info, history)
             _, signal_label, _ = buy_sell_signal(info, overall, history)
+            cmp_overall[ticker] = overall
+            cmp_cats[ticker] = cats
             for cat in cats:
                 cat_rows.append({"Category": cat, "Ticker": ticker, "Score": cats.get(cat)})
 
@@ -2624,6 +2961,80 @@ elif page == "Compare":
 
         if len(rows) >= 2:
             cmp_df = pd.DataFrame(rows)
+
+            # -------------------------------------------------
+            # VERDICT CARDS
+            # One card per contender, with the badge going to a
+            # criterion you pick — "best valuation", not a vague
+            # "winner". Change the criterion and the badge moves,
+            # which is the honest way to show that "best" depends
+            # entirely on what you're optimising for.
+            # -------------------------------------------------
+            st.markdown(
+                f"<div class='lu-kick'>Compare · {len(rows)} securities</div>",
+                unsafe_allow_html=True,
+            )
+            _crit = st.radio(
+                "Rank them by:",
+                ["Overall grade", "Valuation", "Momentum", "1-year return"],
+                horizontal=True,
+                key="cmp_criterion",
+            )
+
+            def _criterion_value(tkr, row):
+                if _crit == "Overall grade":
+                    return cmp_overall.get(tkr)
+                if _crit == "1-year return":
+                    return row.get("1-Yr Return")
+                return (cmp_cats.get(tkr) or {}).get(_crit)
+
+            _scored = {
+                r["Ticker"]: v
+                for r in rows
+                if (v := _criterion_value(r["Ticker"], r)) is not None
+            }
+            _winner = max(_scored, key=_scored.get) if _scored else None
+
+            _cards = st.columns(len(rows))
+            for _col, _r in zip(_cards, rows):
+                _t = _r["Ticker"]
+                _is_win = _t == _winner
+                _yr = _r.get("1-Yr Return")
+                _yr_txt = "N/A" if _yr is None or pd.isna(_yr) else f"{_yr:+.1f}%"
+                _yr_col = P["muted"] if _yr is None or pd.isna(_yr) else (
+                    "#5fae8a" if _yr >= 0 else "#cf6b6b")
+                _pe = _r.get("P/E Ratio")
+                _pe_txt = fmt_ratio(_pe)
+                _val = (cmp_cats.get(_t) or {}).get("Valuation")
+                _val_txt = "N/A" if _val is None else f"{_val:.0f}"
+                _sig = _r.get("Signal") or "N/A"
+                _sig_col = SIGNAL_COLORS.get(_sig, P["muted"])
+                _crown = (f"<span class='lu-crown'>Best {_crit.lower()}</span>" if _is_win else "")
+                with _col:
+                    st.markdown(
+                        f"<div class='lu-cmp{' lu-win' if _is_win else ''}'>{_crown}"
+                        f"<div class='lu-cmp-top'><span class='lu-cmp-sym'>{html.escape(str(_t))}</span>"
+                        f"<span class='lu-cmp-gr'>{_r.get('Grade', 'N/A')}</span></div>"
+                        f"<div class='lu-cmp-nm'>{html.escape(str(_r.get('Name', '')))}</div>"
+                        f"<div class='lu-cmp-row'><span>1-yr</span>"
+                        f"<b style='color:{_yr_col};'>{_yr_txt}</b></div>"
+                        f"<div class='lu-cmp-row'><span>P/E</span><b>{_pe_txt}</b></div>"
+                        f"<div class='lu-cmp-row'><span>Valuation</span><b>{_val_txt}</b></div>"
+                        f"<div class='lu-cmp-row'><span>Signal</span>"
+                        f"<b style='color:{_sig_col};'>{html.escape(_sig)}</b></div>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+
+            if _winner is None:
+                st.caption(f"No {_crit.lower()} score available for these tickers, so nothing is badged.")
+            else:
+                st.caption(
+                    f"The badge marks the best **{_crit.lower()}** only — a different criterion "
+                    "can crown a different ticker. Change it above to see."
+                )
+
+            st.divider()
 
             # -------------------------------------------------
             # COMPARISON TABLE
@@ -2953,6 +3364,8 @@ elif page == "Watchlist":
         graded = []
         wl_failed = []
         details_map = {}  # ticker -> (cats, details) for the "why" expanders
+        name_map = {}     # ticker -> company name, for the ledger rows
+        yr_map = {}       # ticker -> 1-year return, for the ledger rows
         for ticker in wl_tickers:
             info, history, error = get_stock_data(ticker)
             if error:
@@ -2960,6 +3373,9 @@ elif page == "Watchlist":
                 continue
             cats, overall, details = grade_stock(info, history)
             details_map[ticker] = (cats, details)
+            name_map[ticker] = info.get("longName") or info.get("shortName") or ""
+            if history is not None and len(history) > 1 and history["Close"].iloc[0]:
+                yr_map[ticker] = history["Close"].iloc[-1] / history["Close"].iloc[0] - 1
             _, sig_label, _ = buy_sell_signal(info, overall, history)
             graded.append({
                 "Ticker": ticker,
@@ -2981,6 +3397,64 @@ elif page == "Watchlist":
         if graded:
             graded_df = pd.DataFrame(graded).sort_values("Score", ascending=False, na_position="last")
 
+            # -------------------------------------------------
+            # THE LEDGER
+            # A watchlist is a list, so it reads as ruled entries
+            # rather than a spreadsheet. The full sortable table
+            # is kept below in an expander — the ledger is nicer
+            # to scan, but nothing that worked before is lost.
+            # -------------------------------------------------
+            st.markdown(
+                f"<div class='lu-kick'>Watchlist · {len(graded_df)} "
+                f"{'entry' if len(graded_df) == 1 else 'entries'} · ranked by score</div>",
+                unsafe_allow_html=True,
+            )
+
+            _rows = [
+                "<div class='lu-lrow lu-lhead'>"
+                "<span>No.</span><span>Security</span>"
+                "<span class='lu-hide-sm'>Last</span><span>1-yr</span>"
+                "<span class='lu-hide-sm'>Signal</span><span style='text-align:right;'>Grade</span></div>"
+            ]
+            for i, row in enumerate(graded_df.itertuples(index=False), start=1):
+                tkr = row.Ticker
+                yr = yr_map.get(tkr)
+                yr_txt = "N/A" if yr is None else f"{yr * 100:+.1f}%"
+                yr_col = P["muted"] if yr is None else ("#5fae8a" if yr >= 0 else "#cf6b6b")
+                sig = row.Signal or ""
+                sig_txt = "S. BUY" if sig == "Strong Buy" else ("S. SELL" if sig == "Strong Sell" else sig.upper())
+                sig_col = SIGNAL_COLORS.get(sig, P["muted"])
+                price = "N/A" if pd.isna(row.Price) else f"${row.Price:,.2f}"
+                name = html.escape(name_map.get(tkr, ""))
+                _rows.append(
+                    "<div class='lu-lrow'>"
+                    f"<span class='lu-lno'>{i:02d}</span>"
+                    f"<span><span class='lu-ltick'>{html.escape(str(tkr))}</span>"
+                    f"<span class='lu-lsub'>{name}</span></span>"
+                    f"<span class='lu-lnum lu-hide-sm'>{price}</span>"
+                    f"<span class='lu-lnum' style='color:{yr_col};'>{yr_txt}</span>"
+                    f"<span class='lu-lnum lu-hide-sm' style='color:{sig_col}; font-size:11px;'>{sig_txt}</span>"
+                    f"<span class='lu-lgrade'>{row.Grade}</span>"
+                    "</div>"
+                )
+            st.markdown(f"<div class='lu-ledger'>{''.join(_rows)}</div>", unsafe_allow_html=True)
+
+            # Running totals, the way a ledger closes out a page.
+            _sigs = [s for s in graded_df["Signal"].tolist() if isinstance(s, str)]
+            _avg_score = graded_df["Score"].mean(skipna=True)
+            _buys = sum(1 for s in _sigs if "Buy" in s)
+            _holds = sum(1 for s in _sigs if "Hold" in s)
+            _sells = sum(1 for s in _sigs if "Sell" in s)
+            st.markdown(
+                "<div class='lu-lfoot'>"
+                f"<span>Average grade <b>{score_to_letter(None if pd.isna(_avg_score) else _avg_score)}</b></span>"
+                f"<span>Buy signals <b>{_buys}</b></span>"
+                f"<span>Hold <b>{_holds}</b></span>"
+                f"<span>Sell <b>{_sells}</b></span>"
+                "</div>",
+                unsafe_allow_html=True,
+            )
+
             # Color category score cells green→red.
             score_cols = ["Score", "Valuation", "Profitability", "Growth", "Fin. Health", "Momentum"]
 
@@ -2994,32 +3468,51 @@ elif page == "Watchlist":
             def color_signal_cell(val):
                 return f"color: {SIGNAL_COLORS.get(val, '#e6e6e6')}; font-weight: 600;"
 
-            styler = graded_df.style.map(color_score, subset=score_cols) \
-                                    .map(color_signal_cell, subset=["Signal"])
-            st.dataframe(
-                styler,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Signal": st.column_config.TextColumn("Signal", help="Blended Buy/Hold/Sell signal."),
-                    "Price": st.column_config.NumberColumn("Price", format="$%.2f"),
-                    "Score": st.column_config.NumberColumn("Score", format="%.0f"),
-                    "Valuation": st.column_config.NumberColumn("Valuation", format="%.0f"),
-                    "Profitability": st.column_config.NumberColumn("Profitability", format="%.0f"),
-                    "Growth": st.column_config.NumberColumn("Growth", format="%.0f"),
-                    "Fin. Health": st.column_config.NumberColumn("Fin. Health", format="%.0f"),
-                    "Momentum": st.column_config.NumberColumn("Momentum", format="%.0f"),
-                },
-            )
-            st.caption("Sorted by overall score. Expand any ticker below to see why it got its grade.")
+            with st.expander("All columns — sortable table"):
+                styler = graded_df.style.map(color_score, subset=score_cols) \
+                                        .map(color_signal_cell, subset=["Signal"])
+                st.dataframe(
+                    styler,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Signal": st.column_config.TextColumn("Signal", help="Blended Buy/Hold/Sell signal."),
+                        "Price": st.column_config.NumberColumn("Price", format="$%.2f"),
+                        "Score": st.column_config.NumberColumn("Score", format="%.0f"),
+                        "Valuation": st.column_config.NumberColumn("Valuation", format="%.0f"),
+                        "Profitability": st.column_config.NumberColumn("Profitability", format="%.0f"),
+                        "Growth": st.column_config.NumberColumn("Growth", format="%.0f"),
+                        "Fin. Health": st.column_config.NumberColumn("Fin. Health", format="%.0f"),
+                        "Momentum": st.column_config.NumberColumn("Momentum", format="%.0f"),
+                    },
+                )
+                st.caption("Click any column header to sort. Category scores run 0–100.")
 
-            # "Why" breakdown per ticker, in the sorted order.
-            st.divider()
-            st.markdown("**Why these grades?**")
-            for ticker in graded_df["Ticker"]:
-                cats, details = details_map[ticker]
-                with st.expander(f"{ticker} — {score_to_letter(_avg(list(cats.values())))}"):
-                    show_grade_breakdown(cats, details)
+            # Grade breakdowns. One expander per ticker turned into a wall of
+            # dropdowns on a real watchlist, so it's a single panel with a
+            # picker instead — auto-filled from whatever is on the list, in
+            # the same ranked order as the ledger above. A dropdown rather
+            # than tabs, because tabs overflow once you hold a dozen names.
+            _grade_of = dict(zip(graded_df["Ticker"], graded_df["Grade"]))
+            with st.expander("Grades — why each ticker scored what it did"):
+                _pick = st.selectbox(
+                    "Ticker:",
+                    list(graded_df["Ticker"]),
+                    format_func=lambda t: f"{t} — {_grade_of.get(t, 'N/A')}",
+                    key="wl_grade_pick",
+                )
+                if _pick in details_map:
+                    _pick_cats, _pick_details = details_map[_pick]
+                    _pick_reading, _pick_dek = grade_story(_pick_cats, _avg(list(_pick_cats.values())))
+                    if _pick_reading:
+                        st.markdown(
+                            f"<div style=\"font-family:'Fraunces',serif; font-size:18px; font-weight:600; "
+                            f"color:{P['text']}; margin:2px 0 3px;\">{html.escape(_pick_reading)}</div>"
+                            f"<div class='lu-dek' style='max-width:none; margin-bottom:10px;'>"
+                            f"{html.escape(_pick_dek)}</div>",
+                            unsafe_allow_html=True,
+                        )
+                    show_grade_breakdown(_pick_cats, _pick_details)
 
 
 # ===========================================================
