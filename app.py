@@ -227,7 +227,7 @@ a, a:visited {{ color:{P['accent']}; }}
 
 # Bump this whenever you publish an update, so you can confirm the
 # live site is running your latest version (it shows in the sidebar).
-APP_VERSION = "2.5"
+APP_VERSION = "2.5.1"
 
 # Timestamp for when data was last refreshed (shown in the sidebar).
 st.session_state.setdefault("data_refreshed_at", datetime.now())
@@ -410,6 +410,23 @@ def fmp_ratios(ticker: str):
 
 
 @st.cache_data(ttl=86400)
+def fmp_growth(ticker: str):
+    """Year-over-year revenue and EPS growth (FMP).
+
+    Split out of fmp_grade_inputs so the main data path can use it too:
+    without these two fields the whole Growth category scores as "no data",
+    which is what happens on the hosted site where FMP replaces Yahoo."""
+    if not FMP_API_KEY:
+        return {}
+    try:
+        d = requests.get(f"{FMP_BASE}/financial-growth",
+                         params={"symbol": ticker, "apikey": FMP_API_KEY, "limit": 1}, timeout=10).json()
+        return d[0] if isinstance(d, list) and d else {}
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=86400)
 def fmp_grade_inputs(ticker: str):
     """Map FMP's cleaner reported figures onto the same keys grade_stock
     reads from yfinance, so the grade can use more reliable inputs.
@@ -418,14 +435,7 @@ def fmp_grade_inputs(ticker: str):
         return {}
     # Reuse the cached ratios+key-metrics fetch; only growth is extra.
     rk = fmp_ratios(ticker) or {}
-    g = {}
-    try:
-        d = requests.get(f"{FMP_BASE}/financial-growth",
-                         params={"symbol": ticker, "apikey": FMP_API_KEY, "limit": 1}, timeout=10).json()
-        if isinstance(d, list) and d:
-            g = d[0]
-    except Exception:
-        g = {}
+    g = fmp_growth(ticker) or {}
 
     overrides = {}
 
@@ -643,6 +653,7 @@ def _stock_data_from_fmp(ticker: str):
         p = requests.get(f"{FMP_BASE}/profile", params={"symbol": ticker, "apikey": FMP_API_KEY}, timeout=10).json()
         p = p[0] if isinstance(p, list) and p else {}
         rk = fmp_ratios(ticker) or {}
+        gr = fmp_growth(ticker) or {}
 
         d2e = rk.get("debtToEquityRatio")
         info = {
@@ -671,6 +682,10 @@ def _stock_data_from_fmp(ticker: str):
             "dividendYield": rk.get("dividendYield"),
             "yield": rk.get("dividendYield"),
             "totalAssets": q.get("marketCap"),
+            # Without these two the Growth category scores as "no data", so a
+            # cloud grade would average 4 categories where a local one averages 5.
+            "revenueGrowth": gr.get("revenueGrowth"),
+            "earningsGrowth": gr.get("epsgrowth"),
         }
         if info["regularMarketPrice"] is None:
             return None
