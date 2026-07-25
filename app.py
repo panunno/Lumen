@@ -227,7 +227,7 @@ a, a:visited {{ color:{P['accent']}; }}
 
 # Bump this whenever you publish an update, so you can confirm the
 # live site is running your latest version (it shows in the sidebar).
-APP_VERSION = "2.5.1"
+APP_VERSION = "2.5.2"
 
 # Timestamp for when data was last refreshed (shown in the sidebar).
 st.session_state.setdefault("data_refreshed_at", datetime.now())
@@ -738,6 +738,19 @@ def _minimal_info_from_history(ticker: str, history):
 # but blocked on cloud IPs; FMP's free plan misses some symbols;
 # Stooq fills the gaps with free history. Returns (info, history).
 # ---------------------------------------------------------
+def _clean_history(history):
+    """Drop rows that have no closing price.
+
+    Data providers often return a row for the current session before it has
+    a close — around the open, or on a holiday. Every price in Lumen comes
+    from `history["Close"].iloc[-1]`, so a single trailing blank row makes
+    the whole app read "nan": prices, charts, grades, the lot. Stripping
+    those rows here means no page has to think about it."""
+    if history is None or history.empty or "Close" not in history.columns:
+        return history
+    return history.dropna(subset=["Close"])
+
+
 @st.cache_data(ttl=3600)
 def _fetch_stock_cached(ticker: str):
     """Returns (info, history) on success, or RAISES on failure.
@@ -748,7 +761,7 @@ def _fetch_stock_cached(ticker: str):
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
-        history = stock.history(period="1y")
+        history = _clean_history(stock.history(period="1y"))
         if not (history is None or history.empty or not info or info.get("regularMarketPrice") is None):
             return info, history
     except Exception:
@@ -757,11 +770,11 @@ def _fetch_stock_cached(ticker: str):
     # 2) Fall back to FMP (works where Yahoo is IP-blocked).
     fmp = _stock_data_from_fmp(ticker)
     if fmp:
-        return fmp[0], fmp[1]
+        return fmp[0], _clean_history(fmp[1])
 
     # 3) Fall back to Stooq for history (covers symbols FMP's free
     #    plan omits, e.g. many ETFs). Fundamentals will be limited.
-    stooq_hist = _history_from_stooq(ticker)
+    stooq_hist = _clean_history(_history_from_stooq(ticker))
     if stooq_hist is not None and not stooq_hist.empty:
         return _minimal_info_from_history(ticker, stooq_hist), stooq_hist
 
@@ -793,9 +806,14 @@ def get_current_price(ticker: str):
         stock = yf.Ticker(ticker)
         price = stock.fast_info.get("lastPrice")
         if price is None:
-            # Fallback in case fast_info doesn't have it
-            price = stock.history(period="1d")["Close"].iloc[-1]
-        return float(price)
+            # Fallback in case fast_info doesn't have it. Clean first: the
+            # current session's row can exist with no close yet.
+            hist = _clean_history(stock.history(period="5d"))
+            price = hist["Close"].iloc[-1] if hist is not None and not hist.empty else None
+        price = float(price) if price is not None else None
+        if price is None or pd.isna(price):
+            raise ValueError("no usable price")
+        return price
     except Exception:
         # Last resort: Twelve Data (if a key is configured).
         td = get_twelvedata_quote(ticker)
@@ -982,7 +1000,12 @@ def get_portfolio_quote(ticker: str):
         price = fast.get("lastPrice")
         prev_close = fast.get("previousClose")
         if price is None:
-            price = stock.history(period="1d")["Close"].iloc[-1]
+            hist = _clean_history(stock.history(period="5d"))
+            price = hist["Close"].iloc[-1] if hist is not None and not hist.empty else None
+        # A blank price here would value the whole holding at nan, so treat it
+        # as a failure and let the Twelve Data fallback below have a go.
+        if price is None or pd.isna(price):
+            raise ValueError("no usable price")
 
         # .info is slower, so we only reach for the extras it provides.
         info = stock.info
@@ -1898,7 +1921,14 @@ with st.sidebar:
                 if _err:
                     st.error(f"Combined lookup failed: {_err}")
                 else:
-                    st.success(f"Combined lookup ok — AAPL ${_h['Close'].iloc[-1]:,.2f}, {len(_h)} rows.")
+                    _last = _h["Close"].iloc[-1]
+                    if pd.isna(_last):
+                        st.error(
+                            f"Combined lookup returned {len(_h)} rows but the latest close is blank — "
+                            "prices will show as 'nan' everywhere. Try 'Refresh data'."
+                        )
+                    else:
+                        st.success(f"Combined lookup ok — AAPL ${_last:,.2f}, {len(_h)} rows.")
 
     st.caption(f"Lumen v{APP_VERSION}")
 
