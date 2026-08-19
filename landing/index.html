@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lumen — Judge a stock in ten seconds</title>
+<meta name="description" content="Lumen grades any stock or ETF, estimates what it's worth, and tracks your portfolio — all in plain English. Free, no account needed.">
+
+<!-- Social preview (what shows when the link is texted or posted) -->
+<meta property="og:type" content="website">
+<meta property="og:title" content="Lumen — Judge a stock in ten seconds">
+<meta property="og:description" content="Grades any stock or ETF, estimates what it's worth, and tracks your portfolio — in plain English.">
+<meta name="twitter:card" content="summary_large_image">
+
+<!-- Gold sunrise favicon, drawn inline so there's no extra file to upload -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cpath d='M18 43 A14 14 0 0 1 46 43 Z' fill='%23d8ac48'/%3E%3Cg stroke='%23d8ac48' stroke-width='4.4' stroke-linecap='round'%3E%3Cline x1='11' y1='43' x2='53' y2='43'/%3E%3Cline x1='32' y1='8' x2='32' y2='16'/%3E%3Cline x1='15' y1='15' x2='20' y2='22'/%3E%3Cline x1='49' y1='15' x2='44' y2='22'/%3E%3Cline x1='7' y1='30' x2='14' y2='33'/%3E%3Cline x1='57' y1='30' x2='50' y2='33'/%3E%3C/g%3E%3C/svg%3E">
+
+<style>
+  :root{
+    --bg:#120f0a; --bg2:#1a160e; --surface:#211b12; --ink:#f0e8d7; --muted:#a8997e;
+    --gold:#d8ac48; --gold-deep:#b4862f; --line:rgba(240,232,215,.13);
+    --pos:#63b28d; --neg:#cf6f6f;
+    --serif:Georgia,'Iowan Old Style','Times New Roman',serif;
+    --sans:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+    --mono:ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme:light){
+    :root{ --bg:#f4efe4; --bg2:#efe8da; --surface:#ffffff; --ink:#1a150d; --muted:#6c6252;
+      --gold:#9a6a1f; --gold-deep:#845310; --line:rgba(26,21,13,.15); --pos:#3f7d55; --neg:#a8482f; }
+  }
+  :root[data-theme="light"]{ --bg:#f4efe4; --bg2:#efe8da; --surface:#ffffff; --ink:#1a150d; --muted:#6c6252;
+    --gold:#9a6a1f; --gold-deep:#845310; --line:rgba(26,21,13,.15); --pos:#3f7d55; --neg:#a8482f; }
+  :root[data-theme="dark"]{ --bg:#120f0a; --bg2:#1a160e; --surface:#211b12; --ink:#f0e8d7; --muted:#a8997e;
+    --gold:#d8ac48; --gold-deep:#b4862f; --line:rgba(240,232,215,.13); --pos:#63b28d; --neg:#cf6f6f; }
+
+  *{box-sizing:border-box}
+  html,body{margin:0; padding:0; background:var(--bg);}
+  .lm{background:var(--bg); color:var(--ink); font-family:var(--sans); line-height:1.6;
+    -webkit-font-smoothing:antialiased; padding:0 22px 60px; min-height:100vh;}
+  .wrap{max-width:980px; margin:0 auto;}
+  .lm h1,.lm h2,.lm h3{font-family:var(--serif); font-weight:600; text-wrap:balance; margin:0;}
+  .num,.mono{font-family:var(--mono); font-variant-numeric:tabular-nums;}
+  a{color:inherit; text-decoration:none;}
+
+  .masthead{max-width:980px; margin:0 auto; display:flex; align-items:center; justify-content:center; gap:10px;
+    padding:22px 0 18px; position:relative;}
+  .masthead .name{font-family:var(--serif); font-size:22px; font-weight:600; letter-spacing:.3px;}
+  .toggle{position:absolute; right:0; top:20px; font-family:var(--mono); font-size:11px; letter-spacing:.08em; color:var(--muted);
+    background:transparent; border:1px solid var(--line); border-radius:999px; padding:5px 11px; cursor:pointer;}
+  .toggle:hover{border-color:var(--gold); color:var(--gold);}
+
+  .hero{position:relative; overflow:hidden; padding:76px 0 0; text-align:center; min-height:540px;}
+  .sun{position:absolute; left:50%; transform:translateX(-50%); bottom:0; width:min(900px,150%); height:520px; z-index:0; pointer-events:none;}
+  .sun .rise{transform-origin:center bottom; animation:rise 1.15s cubic-bezier(.2,.7,.2,1) both;}
+  .sun .ray{opacity:0; animation:ray .5s ease-out both;}
+  @keyframes rise{from{transform:translateY(34px); opacity:0} to{transform:translateY(0); opacity:1}}
+  @keyframes ray{from{opacity:0} to{opacity:.55}}
+  @media (prefers-reduced-motion:reduce){ .sun .rise,.sun .ray{animation:none; opacity:1;} .sun .ray{opacity:.5;} }
+
+  .heroinner{position:relative; z-index:1;
+    text-shadow:0 0 10px var(--bg), 0 0 22px var(--bg), 0 0 40px var(--bg);}
+  .eyebrow{font-family:var(--mono); font-size:12px; letter-spacing:.24em; text-transform:uppercase; color:var(--gold); margin-bottom:26px;}
+  .hero h1{font-size:clamp(40px,6.4vw,64px); line-height:1.04; letter-spacing:-.01em; max-width:16ch; margin:0 auto;}
+  .hero .lede{font-size:clamp(16px,2.2vw,19px); color:var(--muted); max-width:42ch; margin:24px auto 0;}
+  .cta{display:flex; gap:12px; flex-wrap:wrap; justify-content:center; margin-top:6px;}
+  .btn{font-size:15px; font-weight:500; padding:11px 20px; border-radius:10px; border:1px solid var(--line); display:inline-flex; align-items:center; gap:8px;}
+  .btn.primary{background:var(--gold); border-color:var(--gold); color:#1a1305;}
+  .btn.primary:hover{filter:brightness(1.07);}
+  .btn.ghost:hover{border-color:var(--gold); color:var(--gold);}
+
+  .card{background:var(--surface); border:1px solid var(--line); border-radius:16px;}
+  .gcard{padding:18px 20px;}
+  .gcard .top{display:flex; justify-content:space-between; align-items:flex-start; border-bottom:1px solid var(--line); padding-bottom:12px;}
+  .gcard .nm{font-family:var(--serif); font-size:20px; font-weight:600;}
+  .gcard .sub{font-family:var(--mono); font-size:11px; color:var(--muted);}
+  .gcard .grade{font-family:var(--serif); font-size:44px; font-weight:600; color:var(--gold); line-height:1; text-align:right;}
+  .gcard .rows{display:grid; grid-template-columns:1fr 1fr; gap:9px 16px; margin-top:14px;}
+  .gcard .rows div{display:flex; justify-content:space-between; font-size:12.5px; color:var(--muted); border-bottom:1px dotted var(--line); padding-bottom:6px;}
+  .gcard .rows b{color:var(--ink); font-family:var(--mono); font-weight:500;}
+  .tabs{display:flex; gap:6px; justify-content:center; flex-wrap:wrap; margin-bottom:14px;}
+  .tab{font-family:var(--mono); font-size:12px; letter-spacing:.06em; padding:5px 13px; border-radius:999px;
+    border:1px solid var(--line); background:transparent; color:var(--muted); cursor:pointer; transition:.15s;}
+  .tab:hover{color:var(--gold);}
+  .tab.on{border-color:var(--gold); color:var(--gold);}
+  .exnote{font-family:var(--mono); font-size:10.5px; letter-spacing:.08em; text-transform:uppercase;
+    color:var(--muted); text-align:center; margin-top:10px; opacity:.75;}
+
+  .ticker{border-top:1px solid var(--line); border-bottom:1px solid var(--line); margin-top:30px; overflow:hidden;}
+  .ticker .track{display:flex; gap:32px; padding:10px 0; font-family:var(--mono); font-size:13px; white-space:nowrap; width:max-content; animation:scroll 36s linear infinite;}
+  .ticker .t{color:var(--muted);} .ticker .t b{color:var(--ink); font-weight:500;}
+  .up{color:var(--pos);} .dn{color:var(--neg);}
+  @keyframes scroll{from{transform:translateX(0)} to{transform:translateX(-50%)}}
+  @media (prefers-reduced-motion:reduce){ .ticker .track{animation:none;} }
+
+  section.block{padding:52px 0 0;}
+  .kicker{font-family:var(--mono); font-size:12px; letter-spacing:.18em; text-transform:uppercase; color:var(--gold); margin-bottom:10px;}
+  section.block h2{font-size:clamp(25px,4vw,33px); margin-bottom:6px;}
+  section.block .s{color:var(--muted); max-width:54ch; margin-bottom:24px;}
+  .grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(232px,1fr)); gap:13px;}
+  .feat{padding:18px 20px;} .feat h3{font-size:18px; margin-bottom:6px;} .feat p{font-size:13.5px; color:var(--muted); margin:0; line-height:1.55;}
+
+  .cats{display:grid; gap:11px; margin-top:6px;}
+  .catrow{display:grid; grid-template-columns:150px 1fr 44px; align-items:center; gap:14px;}
+  .catrow .lbl{font-size:14px;} .catrow .bar{display:block; height:8px; background:var(--line); border-radius:999px; overflow:hidden;}
+  .catrow .fill{display:block; height:100%; background:var(--gold); border-radius:999px;}
+  .catrow .fill.hi{background:var(--pos);} .catrow .fill.mid{background:var(--gold);} .catrow .fill.lo{background:var(--neg);}
+  .catrow .v{font-family:var(--mono); font-size:13px; color:var(--muted); text-align:right;}
+  .legend{display:flex; gap:18px; flex-wrap:wrap; margin-top:18px; font-family:var(--mono); font-size:11.5px; color:var(--muted);}
+  .legend span{display:inline-flex; align-items:center; gap:7px;}
+  .legend i{width:9px; height:9px; border-radius:999px; display:inline-block;}
+
+  .final{margin-top:52px; text-align:center; padding:42px 24px; position:relative; overflow:hidden;}
+  .final h2{font-size:clamp(24px,4vw,32px);}
+  footer{max-width:980px; margin:38px auto 0; padding-top:20px; border-top:1px solid var(--line); font-size:13px; color:var(--muted); display:flex; justify-content:space-between; flex-wrap:wrap; gap:12px;}
+  footer .note{max-width:58ch;} .il{color:var(--gold);} .il:hover{text-decoration:underline;}
+  @media (max-width:640px){ .herogrid{grid-template-columns:1fr;} }
+</style>
+</head>
+<body>
+
+<div class="lm">
+  <div class="masthead">
+    <svg width="30" height="30" viewBox="0 0 64 64" aria-hidden="true">
+      <path d="M18 43 A14 14 0 0 1 46 43 Z" fill="var(--gold)"/>
+      <g stroke="var(--gold)" stroke-width="4.4" stroke-linecap="round">
+        <line x1="11" y1="43" x2="53" y2="43"/><line x1="32" y1="8" x2="32" y2="16"/>
+        <line x1="15" y1="15" x2="20" y2="22"/><line x1="49" y1="15" x2="44" y2="22"/>
+        <line x1="7" y1="30" x2="14" y2="33"/><line x1="57" y1="30" x2="50" y2="33"/>
+      </g>
+    </svg>
+    <span class="name">Lumen</span>
+    <button class="toggle" id="themeBtn" aria-label="Switch theme">theme</button>
+  </div>
+
+  <div class="wrap">
+    <div class="hero">
+      <svg class="sun" viewBox="0 0 680 340" preserveAspectRatio="xMidYMax meet" aria-hidden="true">
+        <g class="rise">
+          <g class="ray" stroke="var(--gold)" stroke-width="4" stroke-linecap="round" style="animation-delay:.5s">
+            <line x1="340" y1="70" x2="340" y2="120"/>
+            <line x1="250" y1="90" x2="282" y2="132"/><line x1="430" y1="90" x2="398" y2="132"/>
+            <line x1="176" y1="140" x2="220" y2="172"/><line x1="504" y1="140" x2="460" y2="172"/>
+            <line x1="120" y1="206" x2="172" y2="228"/><line x1="560" y1="206" x2="508" y2="228"/>
+          </g>
+          <path d="M210 300 A130 130 0 0 1 470 300 Z" fill="var(--gold)" opacity="0.22"/>
+          <path d="M250 300 A90 90 0 0 1 430 300 Z" fill="var(--gold)" opacity="0.42"/>
+          <path d="M285 300 A55 55 0 0 1 395 300 Z" fill="var(--gold)" opacity="0.9"/>
+          <line x1="20" y1="300" x2="660" y2="300" stroke="var(--gold-deep)" stroke-width="1.5" opacity="0.4"/>
+        </g>
+      </svg>
+
+      <div class="heroinner">
+        <div class="eyebrow">Personal equity research</div>
+        <h1>Judge a stock in ten seconds.</h1>
+        <p class="lede">Lumen grades any stock or ETF, estimates what it's worth, and tracks your portfolio — all in plain English.</p>
+      </div>
+    </div>
+
+    <div class="cta">
+      <a class="btn primary" href="https://lumeninvest.streamlit.app">Open Lumen</a>
+      <a class="btn ghost" href="#grade">See how grading works</a>
+    </div>
+
+    <div style="margin-top:62px;">
+      <div class="tabs" id="tabs">
+        <button class="tab on" data-t="AAPL">AAPL</button>
+        <button class="tab" data-t="NVDA">NVDA</button>
+        <button class="tab" data-t="VOO">VOO</button>
+        <button class="tab" data-t="PLTR">PLTR</button>
+      </div>
+      <div style="display:flex; justify-content:center;">
+        <div class="card gcard" style="max-width:380px; width:100%;">
+          <div class="top">
+            <div><div class="nm" id="c-nm">Apple Inc.</div><div class="sub" id="c-sub">NASDAQ · AAPL</div></div>
+            <div><div class="grade" id="c-grade">A&minus;</div><div class="sub" style="text-align:right;">Lumen grade</div></div>
+          </div>
+          <div class="rows">
+            <div>Signal <b id="c-sig">Buy</b></div>
+            <div>Fair value <b id="c-fv">$312</b></div>
+            <div>1-yr <b id="c-yr">+24.6%</b></div>
+            <div>P/E <b id="c-pe">28.4</b></div>
+            <div>Upside <b id="c-up">+8.2%</b></div>
+            <div>Momentum <b id="c-mo">72/100</b></div>
+          </div>
+        </div>
+      </div>
+      <div class="exnote" id="exnote">Example data &middot; open Lumen for live numbers</div>
+    </div>
+
+    <div class="ticker" aria-hidden="true">
+      <div class="track">
+        <span class="t">AAPL <b>296.6</b> <span class="up">+0.9%</span></span>
+        <span class="t">NVDA <b>141.2</b> <span class="dn">&minus;1.2%</span></span>
+        <span class="t">MSFT <b>438.1</b> <span class="up">+0.4%</span></span>
+        <span class="t">VOO <b>512.1</b> <span class="up">+0.4%</span></span>
+        <span class="t">PLTR <b>72.8</b> <span class="up">+3.1%</span></span>
+        <span class="t">HOOD <b>24.5</b> <span class="dn">&minus;0.7%</span></span>
+        <span class="t">COIN <b>231.0</b> <span class="up">+2.2%</span></span>
+        <span class="t">AAPL <b>296.6</b> <span class="up">+0.9%</span></span>
+        <span class="t">NVDA <b>141.2</b> <span class="dn">&minus;1.2%</span></span>
+        <span class="t">MSFT <b>438.1</b> <span class="up">+0.4%</span></span>
+        <span class="t">VOO <b>512.1</b> <span class="up">+0.4%</span></span>
+        <span class="t">PLTR <b>72.8</b> <span class="up">+3.1%</span></span>
+        <span class="t">HOOD <b>24.5</b> <span class="dn">&minus;0.7%</span></span>
+        <span class="t">COIN <b>231.0</b> <span class="up">+2.2%</span></span>
+      </div>
+    </div>
+
+    <section class="block">
+      <div class="kicker">What's inside</div>
+      <h2>A research desk, not a spreadsheet.</h2>
+      <p class="s">Fourteen tools that turn raw market data into something you can actually reason about.</p>
+      <div class="grid">
+        <div class="card feat"><h3>Grade &amp; value</h3><p>An A–F scorecard across five categories, a fair-value estimate, and a Buy/Hold/Sell signal.</p></div>
+        <div class="card feat"><h3>Compare</h3><p>Put 2–5 tickers head-to-head — metrics, grade, and a one-year price race.</p></div>
+        <div class="card feat"><h3>Discover</h3><p>Surface under-the-radar names with a data-driven signal, ranked best to worst.</p></div>
+        <div class="card feat"><h3>Portfolio</h3><p>Value your holdings live, with allocation, diversification, and gain/loss.</p></div>
+        <div class="card feat"><h3>Backtester</h3><p>Test moving-average or RSI strategies against buy &amp; hold and a benchmark.</p></div>
+        <div class="card feat"><h3>Bonds &amp; macro</h3><p>The Treasury yield curve and key economic indicators, explained simply.</p></div>
+        <div class="card feat"><h3>Watchlist &amp; alerts</h3><p>Track names you're eyeing and get flagged when price or signal moves.</p></div>
+        <div class="card feat"><h3>Earnings</h3><p>Upcoming report dates, analyst estimates, and how past quarters landed.</p></div>
+      </div>
+    </section>
+
+    <section class="block" id="grade">
+      <div class="kicker">How the grade works</div>
+      <h2>Five reads, one letter.</h2>
+      <p class="s">Every stock is scored 0–100 on five equally-weighted categories against healthy benchmarks, then averaged into a grade. Pick a ticker to see its scores.</p>
+      <div class="tabs" id="tabs2" style="justify-content:flex-start;"></div>
+      <div class="cats" id="cats"></div>
+      <div class="legend">
+        <span><i style="background:var(--pos)"></i> 80&ndash;100 &middot; strong</span>
+        <span><i style="background:var(--gold)"></i> 60&ndash;79 &middot; fair</span>
+        <span><i style="background:var(--neg)"></i> below 60 &middot; weak</span>
+      </div>
+    </section>
+
+    <section class="card final">
+      <h2>Look up your first ticker.</h2>
+      <p class="s" style="margin:10px auto 20px; max-width:44ch;">Free, no account needed. Type a symbol and get the whole picture.</p>
+      <a class="btn primary" href="https://lumeninvest.streamlit.app">Open Lumen</a>
+    </section>
+
+    <footer>
+      <span class="note">Educational tool, not financial advice. Data from public sources and can be delayed or wrong — always do your own research.</span>
+      <span><a class="il" href="https://lumeninvest.streamlit.app">lumeninvest.streamlit.app</a></span>
+    </footer>
+  </div>
+</div>
+
+<!--
+  Card data. Regenerate with:  py make_landing_data.py
+  That script runs Lumen's own grading code and rewrites this block with real,
+  dated output. Until it is run, these are hand-written examples and the note
+  under the card says so.
+-->
+<script id="lumen-data" type="application/json">
+{
+  "asof": "Jul 17, 2026",
+  "order": [
+    "AAPL",
+    "NVDA",
+    "VOO",
+    "PLTR"
+  ],
+  "cards": {
+    "AAPL": {
+      "nm": "Apple Inc.",
+      "sub": "NasdaqGS · AAPL",
+      "grade": "B",
+      "sig": "Buy",
+      "fv": "$182",
+      "yr": "+59.3%",
+      "pe": "40.3",
+      "up": "−5.2%",
+      "mo": "100/100",
+      "cats": {
+        "Valuation": 6,
+        "Profitability": 100,
+        "Growth": 93,
+        "Financial Health": 57,
+        "Momentum": 100
+      }
+    },
+    "NVDA": {
+      "nm": "NVIDIA Corporation",
+      "sub": "NasdaqGS · NVDA",
+      "grade": "A-",
+      "sig": "Strong Buy",
+      "fv": "$38",
+      "yr": "+20.0%",
+      "pe": "32.6",
+      "up": "+45.6%",
+      "mo": "76/100",
+      "cats": {
+        "Valuation": 42,
+        "Profitability": 100,
+        "Growth": 100,
+        "Financial Health": 100,
+        "Momentum": 76
+      }
+    },
+    "VOO": {
+      "nm": "Vanguard S&P 500 ETF",
+      "sub": "NYSEArca · VOO",
+      "grade": "B+",
+      "sig": "Strong Buy",
+      "fv": "N/A",
+      "yr": "+21.0%",
+      "pe": "27.0",
+      "up": "N/A",
+      "mo": "87/100",
+      "cats": {
+        "Valuation": 72,
+        "Profitability": null,
+        "Growth": null,
+        "Financial Health": null,
+        "Momentum": 87
+      }
+    },
+    "PLTR": {
+      "nm": "Palantir Technologies Inc.",
+      "sub": "NasdaqGS · PLTR",
+      "grade": "B-",
+      "sig": "Buy",
+      "fv": "$18",
+      "yr": "−12.7%",
+      "pe": "151.1",
+      "up": "+36.2%",
+      "mo": "15/100",
+      "cats": {
+        "Valuation": 11,
+        "Profitability": 100,
+        "Growth": 100,
+        "Financial Health": 100,
+        "Momentum": 15
+      }
+    }
+  }
+}
+</script>
+
+<script>
+  (function(){
+    var PAYLOAD={}, D={};
+    try{ PAYLOAD=JSON.parse(document.getElementById('lumen-data').textContent); D=PAYLOAD.cards||{}; }catch(e){ return; }
+
+    // Only claim the numbers are real once the generator has stamped a date.
+    if(PAYLOAD.asof){
+      document.getElementById('exnote').textContent='Real Lumen output · as of '+PAYLOAD.asof;
+    }
+
+    function tone(el,v){
+      el.className = v.indexOf("+")===0 ? "up" : (v.indexOf("−")===0||v.indexOf("-")===0 ? "dn" : "");
+    }
+    function set(t){
+      var d=D[t]; if(!d) return;
+      document.getElementById('c-nm').textContent=d.nm;
+      document.getElementById('c-sub').textContent=d.sub;
+      document.getElementById('c-grade').textContent=d.grade;
+      document.getElementById('c-fv').textContent=d.fv;
+      document.getElementById('c-pe').textContent=d.pe;
+      document.getElementById('c-mo').textContent=d.mo;
+      var sig=document.getElementById('c-sig'); sig.textContent=d.sig;
+      sig.className = d.sig==="Buy" ? "up" : (d.sig==="Sell" ? "dn" : "");
+      var yr=document.getElementById('c-yr'); yr.textContent=d.yr; tone(yr,d.yr);
+      var up=document.getElementById('c-up'); up.textContent=d.up; tone(up,d.up);
+      bars(d.cats||{});
+    }
+
+    // The five category bars, redrawn for whichever ticker is selected.
+    var CATS=["Valuation","Profitability","Growth","Financial Health","Momentum"];
+    var catHost=document.getElementById('cats');
+    function band(s){ return s>=80?'hi':(s>=60?'mid':'lo'); }
+    function bars(cats){
+      if(!catHost) return;
+      catHost.innerHTML='';
+      CATS.forEach(function(name){
+        var s=cats[name];
+        var row=document.createElement('div'); row.className='catrow';
+
+        var lbl=document.createElement('span'); lbl.className='lbl'; lbl.textContent=name;
+        var bar=document.createElement('span'); bar.className='bar';
+        var val=document.createElement('span'); val.className='v';
+
+        if(s===null||s===undefined){
+          // No score available (e.g. an ETF with no earnings data) — show
+          // an empty track rather than a zero bar, which would read as "0".
+          val.textContent='N/A';
+        }else{
+          var fill=document.createElement('span');
+          fill.className='fill '+band(s);
+          fill.style.width=Math.max(2,Math.min(100,s))+'%';
+          bar.appendChild(fill);
+          val.textContent=s;
+        }
+        row.appendChild(lbl); row.appendChild(bar); row.appendChild(val);
+        catHost.appendChild(row);
+      });
+    }
+
+    // Build both tab rows from the data and keep them in lockstep.
+    var order=(PAYLOAD.order||Object.keys(D));
+    if(!order.length) return;
+    var hosts=[document.getElementById('tabs'), document.getElementById('tabs2')].filter(Boolean);
+    function select(t){
+      hosts.forEach(function(h){
+        h.querySelectorAll('.tab').forEach(function(x){
+          x.classList.toggle('on', x.dataset.t===t);
+        });
+      });
+      set(t);
+    }
+    hosts.forEach(function(h){
+      h.innerHTML='';
+      order.forEach(function(t){
+        var b=document.createElement('button');
+        b.className='tab'; b.textContent=t; b.dataset.t=t;
+        b.addEventListener('click',function(){ select(t); });
+        h.appendChild(b);
+      });
+    });
+    select(order[0]);
+  })();
+
+  (function(){
+    var b=document.getElementById('themeBtn'), r=document.documentElement;
+    b.addEventListener('click',function(){
+      var c=r.getAttribute('data-theme');
+      if(!c){ c=window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'; }
+      r.setAttribute('data-theme', c==='dark'?'light':'dark');
+    });
+  })();
+</script>
+</body>
+</html>
