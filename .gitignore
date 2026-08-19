@@ -11,3 +11,7 @@ __pycache__/
 
 # Streamlit secrets (if ever added)
 .streamlit/secrets.toml
+
+# Claude Code config — machine-specific (absolute interpreter paths,
+# local permission allowlist). Not useful to anyone else.
+.claude/
