@@ -38,6 +38,7 @@ import plotly.express as px
 import os
 import io
 import html
+import time
 import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime
@@ -227,7 +228,7 @@ a, a:visited {{ color:{P['accent']}; }}
 
 # Bump this whenever you publish an update, so you can confirm the
 # live site is running your latest version (it shows in the sidebar).
-APP_VERSION = "2.5.2"
+APP_VERSION = "2.5.3"
 
 # Timestamp for when data was last refreshed (shown in the sidebar).
 st.session_state.setdefault("data_refreshed_at", datetime.now())
@@ -695,9 +696,98 @@ def _stock_data_from_fmp(ticker: str):
 
 
 # ---------------------------------------------------------
-# STOOQ FALLBACK — free, keyless daily history with broad
-# coverage (incl. ETFs / dual-class shares FMP's free plan
-# omits). Works from the cloud where Yahoo is IP-blocked.
+# TWELVE DATA REQUEST BUDGET
+# The free plan allows roughly 8 requests per minute. Most pages
+# ask about one ticker, but Discover grades up to 25 and the
+# Portfolio page values every holding, so an unguarded fallback
+# would spend the whole minute's allowance on a single page load
+# and then fail for everything after it.
+#
+# So we count recent calls and simply decline once the budget is
+# spent. We deliberately do NOT sleep to wait for room: that would
+# freeze the page for the visitor. Declining just means that one
+# ticker reports "no data", which is the same graceful outcome the
+# app already handles everywhere else.
+#
+# cache_resource (not cache_data) because this is one shared
+# counter for the whole app — the rate limit belongs to the API
+# key, not to each visitor.
+# ---------------------------------------------------------
+@st.cache_resource
+def _td_budget():
+    return {"calls": []}
+
+
+def _td_budget_ok(max_per_min: int = 6):
+    """True if we may spend one more Twelve Data request right now.
+
+    Kept a couple under the real limit so the quote fallback
+    (get_twelvedata_quote) still has room to work."""
+    try:
+        state = _td_budget()
+        now = time.time()
+        state["calls"] = [t for t in state["calls"] if now - t < 60]
+        if len(state["calls"]) >= max_per_min:
+            return False
+        state["calls"].append(now)
+        return True
+    except Exception:
+        # If the counter itself misbehaves, don't block data entirely.
+        return True
+
+
+# ---------------------------------------------------------
+# TWELVE DATA HISTORY FALLBACK — daily bars for symbols FMP's
+# free plan refuses (it returns HTTP 402 for most ETFs, e.g.
+# QQQ / VOO / VTI / BND / SCHD, and for dual-class shares).
+# This is the step that keeps those tickers working on the
+# cloud, where Yahoo is IP-blocked and FMP alone isn't enough.
+#
+# Not cached here on purpose: _fetch_stock_cached already caches
+# the finished result for an hour, and caching this directly
+# would also cache a temporary "budget spent" None for an hour.
+# ---------------------------------------------------------
+def _history_from_twelvedata(ticker: str):
+    if not TWELVEDATA_API_KEY or not _td_budget_ok():
+        return None
+    try:
+        # Twelve Data writes class shares with a dot (BRK.B) where
+        # Yahoo and FMP use a dash (BRK-B).
+        sym = ticker.strip().upper().replace("-", ".")
+        r = requests.get(
+            "https://api.twelvedata.com/time_series",
+            params={"symbol": sym, "interval": "1day",
+                    "outputsize": 252, "apikey": TWELVEDATA_API_KEY},
+            timeout=20,
+        )
+        d = r.json()
+        # On failure Twelve Data returns {"status": "error", ...} rather
+        # than an HTTP error code, so check the body, not r.status_code.
+        if not isinstance(d, dict) or not d.get("values"):
+            return None
+        df = pd.DataFrame(d["values"])
+        if df.empty or "close" not in df.columns or "datetime" not in df.columns:
+            return None
+        df["datetime"] = pd.to_datetime(df["datetime"])
+        df = df.set_index("datetime").sort_index()   # API returns newest first
+        df.index.name = "Date"
+        df = df.rename(columns={"open": "Open", "high": "High", "low": "Low",
+                                "close": "Close", "volume": "Volume"})
+        keep = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
+        # Every value arrives as a string; the rest of the app does maths on these.
+        df = df[keep].apply(pd.to_numeric, errors="coerce").tail(252)
+        return df if not df.empty else None
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------
+# STOOQ FALLBACK — free, keyless daily history. Kept as a last
+# resort, but as of Sept 2026 Stooq answers with a JavaScript
+# browser check instead of CSV, so this normally returns None.
+# Harmless to leave in place: it costs one request only when
+# every other source has already failed, and it resumes working
+# on its own if Stooq drops the challenge.
 # ---------------------------------------------------------
 def _history_from_stooq(ticker: str):
     try:
@@ -734,9 +824,11 @@ def _minimal_info_from_history(ticker: str, history):
 
 # ---------------------------------------------------------
 # SECTION 4: HELPER FUNCTION TO FETCH STOCK DATA
-# Order of sources: Yahoo Finance → FMP → Stooq. Yahoo is best
-# but blocked on cloud IPs; FMP's free plan misses some symbols;
-# Stooq fills the gaps with free history. Returns (info, history).
+# Order of sources: Yahoo Finance → FMP → Twelve Data → Stooq.
+# Yahoo is best but blocked on cloud IPs; FMP's free plan returns
+# 402 for most ETFs and dual-class shares; Twelve Data covers those
+# (rate-limited, so it's budgeted); Stooq is a dormant last resort.
+# Returns (info, history).
 # ---------------------------------------------------------
 def _clean_history(history):
     """Drop rows that have no closing price.
@@ -772,8 +864,15 @@ def _fetch_stock_cached(ticker: str):
     if fmp:
         return fmp[0], _clean_history(fmp[1])
 
-    # 3) Fall back to Stooq for history (covers symbols FMP's free
-    #    plan omits, e.g. many ETFs). Fundamentals will be limited.
+    # 3) Fall back to Twelve Data for history. This is what covers the
+    #    ETFs and dual-class shares FMP's free plan returns 402 for.
+    #    Fundamentals will be limited — we only get prices here.
+    td_hist = _clean_history(_history_from_twelvedata(ticker))
+    if td_hist is not None and not td_hist.empty:
+        return _minimal_info_from_history(ticker, td_hist), td_hist
+
+    # 4) Last resort: Stooq. Usually unavailable now (see above), but
+    #    costs nothing until everything else has already failed.
     stooq_hist = _clean_history(_history_from_stooq(ticker))
     if stooq_hist is not None and not stooq_hist.empty:
         return _minimal_info_from_history(ticker, stooq_hist), stooq_hist
