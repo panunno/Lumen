@@ -1475,6 +1475,214 @@ def stock_risk_stats(history):
 
 
 # ---------------------------------------------------------
+# PORTFOLIO ANALYTICS
+# Everything above measures ONE stock. These measure the whole
+# portfolio against a benchmark, which is a different question:
+# not "is this a good company" but "did owning this mix beat
+# just buying the index, and where is the risk actually coming
+# from".
+#
+# Benchmarks you can measure against. Beta and alpha are only
+# meaningful relative to a sensible yardstick — comparing a bond
+# portfolio to the S&P would produce a technically valid number
+# that means nothing.
+# ---------------------------------------------------------
+BENCHMARKS = {
+    "SPY": "S&P 500 — large US companies",
+    "QQQ": "Nasdaq 100 — big tech-heavy",
+    "VTI": "Total US stock market",
+    "IWM": "Russell 2000 — small companies",
+    "AGG": "US bond market",
+}
+
+# A holding needs roughly this much history to say anything about
+# it, and its data has to be current. Both guards exist because one
+# bad holding used to poison the whole calculation: the maths needs
+# a date range every holding shares, so a stock that listed two
+# months ago silently shortened the window for everything else, and
+# a delisted one (acquired, taken private) stopped it dead.
+PF_MIN_BARS = 200
+PF_STALE_DAYS = 10
+
+
+@st.cache_data(ttl=3600)
+def _portfolio_closes(tickers: tuple, period: str = "1y"):
+    """Daily closing prices for several tickers, plus why any were left out.
+
+    Returns (DataFrame of closes, {ticker: reason}). Goes through
+    get_stock_data so it inherits the whole Yahoo -> FMP -> Twelve Data
+    fallback chain; an ETF that only one provider carries still works."""
+    closes, skipped = {}, {}
+    cutoff = pd.Timestamp.now().normalize() - pd.Timedelta(days=PF_STALE_DAYS)
+    for t in tickers:
+        try:
+            _, hist, _ = get_stock_data(t)
+            if hist is None or hist.empty or "Close" not in hist.columns:
+                skipped[t] = "no price data available"
+                continue
+            s = hist["Close"].dropna()
+            if getattr(s.index, "tz", None) is not None:
+                s.index = s.index.tz_localize(None)
+            s.index = s.index.normalize()
+            if len(s) < PF_MIN_BARS:
+                skipped[t] = f"only {len(s)} days of history"
+            elif s.index[-1] < cutoff:
+                skipped[t] = f"no prices since {s.index[-1].date()}"
+            else:
+                closes[t] = s
+        except Exception:
+            skipped[t] = "could not be loaded"
+    df = pd.DataFrame(closes).ffill().dropna() if closes else pd.DataFrame()
+    return df, skipped
+
+
+def _ann_return(r):
+    """Compound the period's returns, then scale to a yearly rate."""
+    if r is None or len(r) == 0:
+        return None
+    return float((1 + r).prod() ** (252 / len(r)) - 1)
+
+
+def _ann_vol(r):
+    return float(r.std() * np.sqrt(252)) if r is not None and len(r) > 1 else None
+
+
+def _max_drawdown(r):
+    c = (1 + r).cumprod()
+    return float((c / c.cummax() - 1).min())
+
+
+def portfolio_performance(holdings, benchmark="SPY", rf=0.04, period="1y"):
+    """Measure a portfolio against a benchmark.
+
+    `holdings` is the usual Ticker/Shares table. Weights come from what
+    each position is worth today, and those weights are applied across
+    the whole period — so this answers "how would today's mix have
+    done", not "how did my actual trading do". The Performance page
+    says so on screen, because the difference matters once you've
+    bought or sold during the period.
+
+    Returns a dict of results, or None if nothing usable is left."""
+    if holdings is None or holdings.empty:
+        return None
+    tickers = [t for t in holdings["Ticker"].astype(str).str.strip().str.upper().unique() if t]
+    if not tickers:
+        return None
+
+    px, skipped = _portfolio_closes(tuple(sorted(tickers) + [benchmark]), period)
+    if px.empty or benchmark not in px.columns:
+        return None
+    held = [t for t in tickers if t in px.columns]
+    if not held:
+        return None
+
+    shares = (holdings.groupby(holdings["Ticker"].astype(str).str.strip().str.upper())["Shares"]
+              .sum())
+    last = px.iloc[-1]
+    value = {t: float(shares.get(t, 0)) * float(last[t]) for t in held}
+    total = sum(value.values())
+    if total <= 0:
+        return None
+    weights = pd.Series({t: value[t] / total for t in held})
+
+    rets = px[held].pct_change().dropna()
+    bench = px[benchmark].pct_change().dropna()
+    idx = rets.index.intersection(bench.index)
+    rets, bench = rets.loc[idx], bench.loc[idx]
+    if len(idx) < 30:
+        return None
+    port = (rets * weights).sum(axis=1)
+
+    # Beta is how much the portfolio moves for each 1% the benchmark
+    # moves. Alpha is what's left over after beta explains what it can —
+    # the part that didn't come from simply taking market risk.
+    bvar = float(np.var(bench, ddof=1))
+    beta = float(np.cov(port, bench)[0, 1] / bvar) if bvar > 0 else None
+    pr, br = _ann_return(port), _ann_return(bench)
+    alpha = (pr - (rf + beta * (br - rf))) if beta is not None else None
+    pvol, bvol = _ann_vol(port), _ann_vol(bench)
+
+    # Risk contribution: a holding's share of total portfolio volatility.
+    # It is NOT the same as its share of the money — a small, wild
+    # position can dominate the risk, and a large, steady one can carry
+    # much less than its weight. Contributions sum to 100%, and a
+    # holding that moves against the rest can come out negative.
+    cov_ann = rets.cov() * 252
+    pvar = float(weights @ cov_ann @ weights)
+    contrib = {}
+    if pvar > 0:
+        mctr = (cov_ann @ weights) / np.sqrt(pvar)
+        share = (weights * mctr) / np.sqrt(pvar)
+        for t in held:
+            tb = float(np.cov(rets[t], bench)[0, 1] / bvar) if bvar > 0 else None
+            contrib[t] = {"weight": float(weights[t]), "risk": float(share[t]),
+                          "beta": tb, "value": value[t]}
+
+    corr = rets.corr()
+    pairs = [(a, b, float(corr.loc[a, b]))
+             for i, a in enumerate(held) for b in held[i + 1:]]
+    pairs.sort(key=lambda x: -x[2])
+
+    return {
+        "benchmark": benchmark, "days": len(idx), "total": total,
+        "held": held, "skipped": skipped, "weights": weights,
+        "growth": (1 + port).cumprod() * 100,
+        "bench_growth": (1 + bench).cumprod() * 100,
+        "ret": pr, "bench_ret": br, "alpha": alpha, "beta": beta,
+        "vol": pvol, "bench_vol": bvol,
+        "sharpe": ((pr - rf) / pvol) if pvol else None,
+        "bench_sharpe": ((br - rf) / bvol) if bvol else None,
+        "drawdown": _max_drawdown(port), "bench_drawdown": _max_drawdown(bench),
+        "corr": float(np.corrcoef(port, bench)[0, 1]),
+        "tracking_error": float((port - bench).std() * np.sqrt(252)),
+        "contrib": contrib,
+        "most_correlated": pairs[:3], "least_correlated": pairs[-3:][::-1],
+    }
+
+
+def performance_from_snapshots(history, benchmark="SPY", rf=0.04):
+    """Same headline numbers, but from recorded portfolio values.
+
+    This is the honest version: it reflects what the portfolio was
+    actually worth on each day it was recorded, including any buying
+    and selling. It only works once enough snapshots exist, which is
+    why the page falls back to the reconstruction until then."""
+    if history is None or len(history) < 30 or "Value" not in history.columns:
+        return None
+    try:
+        h = history.dropna(subset=["Value"]).copy()
+        h["Date"] = pd.to_datetime(h["Date"])
+        h = h.sort_values("Date").set_index("Date")
+        port = h["Value"].pct_change().dropna()
+        if len(port) < 25:
+            return None
+        bpx, _ = _portfolio_closes((benchmark,))
+        if bpx.empty:
+            return None
+        bench = bpx[benchmark].reindex(port.index).ffill().pct_change().dropna()
+        idx = port.index.intersection(bench.index)
+        port, bench = port.loc[idx], bench.loc[idx]
+        if len(idx) < 25:
+            return None
+        bvar = float(np.var(bench, ddof=1))
+        beta = float(np.cov(port, bench)[0, 1] / bvar) if bvar > 0 else None
+        pr, br = _ann_return(port), _ann_return(bench)
+        pvol = _ann_vol(port)
+        return {
+            "benchmark": benchmark, "days": len(idx),
+            "growth": (1 + port).cumprod() * 100,
+            "bench_growth": (1 + bench).cumprod() * 100,
+            "ret": pr, "bench_ret": br, "beta": beta,
+            "alpha": (pr - (rf + beta * (br - rf))) if beta is not None else None,
+            "vol": pvol, "bench_vol": _ann_vol(bench),
+            "sharpe": ((pr - rf) / pvol) if pvol else None,
+            "drawdown": _max_drawdown(port), "bench_drawdown": _max_drawdown(bench),
+        }
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------
 # SHARED HELPER: BUY / SELL SIGNAL
 # Blends four ingredients into one 0-100 "buy score":
 #   1) our overall A-F grade
@@ -1863,8 +2071,8 @@ def evaluate_alerts():
 # decide which page's code to run.
 # ---------------------------------------------------------
 PAGES = ["Welcome", "Overview", "Ticker Lookup", "Grade & Value", "Compare", "Discover", "Watchlist",
-         "Alerts", "Earnings", "Portfolio Tracker", "Backtester", "Bonds", "Mutual Funds",
-         "Macro Data", "Glossary"]
+         "Alerts", "Earnings", "Portfolio Tracker", "Performance", "Backtester", "Bonds",
+         "Mutual Funds", "Macro Data", "Glossary"]
 
 with st.sidebar:
     # Brand header (logo + name + tagline) at the top of the sidebar.
@@ -1910,7 +2118,8 @@ with st.sidebar:
         menu_title=None,                       # no title = more compact
         options=PAGES,
         icons=["stars", "house", "search", "clipboard-check", "arrow-left-right", "binoculars", "star",
-               "bell", "calendar-event", "briefcase", "graph-up", "bank", "collection", "globe", "book"],  # Bootstrap icon names
+               "bell", "calendar-event", "briefcase", "speedometer2", "graph-up", "bank",
+               "collection", "globe", "book"],  # Bootstrap icon names
         default_index=_current_idx,
         manual_select=_manual_nav,
         key=f"main_menu_{THEME}",
@@ -4319,6 +4528,208 @@ elif page == "Portfolio Tracker":
 
 
 # ===========================================================
+# PAGE: PERFORMANCE
+# Everywhere else in Lumen judges one stock at a time. This page
+# judges the portfolio as a whole, against a benchmark:
+#   - did the mix beat the index, and was that skill or just risk
+#     (alpha vs beta)
+#   - how bumpy was the ride for the return earned (Sharpe)
+#   - which holdings actually generate the volatility, which is
+#     usually not the ones holding the most money
+# ===========================================================
+elif page == "Performance":
+    st.caption("How the whole portfolio did against a benchmark — and where its risk comes from.")
+
+    with st.expander("New to these numbers? Start here"):
+        st.markdown(
+            "**Beta** is how much your portfolio moves when the market moves. A beta of 1 means it "
+            "tracks the market; 0.8 means it moves 80% as much; 1.3 means it swings harder.\n\n"
+            "**Alpha** is the part of your return that beta *doesn't* explain — what you earned "
+            "beyond what simply taking that much market risk would have given you. Positive alpha "
+            "is the interesting kind of outperformance. Beating the market with a high beta isn't "
+            "alpha; it's just a bigger bet.\n\n"
+            "**Sharpe ratio** is return per unit of risk. Higher is better, and comparing your "
+            "Sharpe to the benchmark's says whether you were paid for the bumps you sat through.\n\n"
+            "**Risk contribution** is each holding's share of total portfolio volatility. It is not "
+            "the same as its share of the money: a small, volatile position can generate far more "
+            "risk than its weight suggests, and a steady one can generate far less."
+        )
+
+    _pf_perf = load_portfolio_holdings()
+    if _pf_perf.empty:
+        empty_state("Add holdings on the Portfolio Tracker page and this fills in automatically.")
+    else:
+        pc1, pc2, pc3 = st.columns([2, 2, 1.4])
+        with pc1:
+            _bench = st.selectbox(
+                "Measure against:", list(BENCHMARKS.keys()),
+                format_func=lambda b: f"{b} — {BENCHMARKS[b].split(' — ')[-1]}",
+                help="Beta and alpha only mean something against a comparable yardstick. "
+                     "Use a bond benchmark for a bond-heavy portfolio.",
+            )
+        with pc3:
+            _rf = st.number_input(
+                "Risk-free %", min_value=0.0, max_value=10.0, value=4.0, step=0.25,
+                help="Roughly what cash or short Treasuries pay. Used by Sharpe and alpha, "
+                     "which both measure return earned above a no-risk alternative.",
+            ) / 100.0
+
+        _snap = load_pf_history()
+        _recorded = performance_from_snapshots(_snap, _bench, _rf)
+        with pc2:
+            _opts = ["Today's holdings, replayed"] + (["Recorded daily values"] if _recorded else [])
+            _mode = st.radio("Based on:", _opts, horizontal=True,
+                             help="Replaying today's holdings works immediately but assumes you "
+                                  "held this exact mix all year. Recorded values reflect what you "
+                                  "actually owned day to day, and unlock once enough snapshots "
+                                  "have built up.")
+
+        if _mode.startswith("Recorded") and _recorded:
+            perf, _reconstructed = _recorded, False
+        else:
+            with st.spinner("Measuring the portfolio…"):
+                perf = portfolio_performance(_pf_perf, _bench, _rf)
+            _reconstructed = True
+
+        if not perf:
+            st.warning(
+                "Not enough usable price history to measure this portfolio yet. This needs at "
+                "least a few months of data on the holdings."
+            )
+        else:
+            if _reconstructed:
+                st.caption(
+                    f"Based on today's holdings replayed over the last {perf['days']} trading days — "
+                    "it assumes this exact mix was held throughout, so recent buys or sells will "
+                    "skew it. "
+                    + (f"Recorded daily values take over once {30 - len(_snap)} more snapshots build up "
+                       "(one is saved each day you open the Portfolio page)."
+                       if len(_snap) < 30 else "")
+                )
+            else:
+                st.caption(
+                    f"Based on {perf['days']} recorded daily values — this reflects what you "
+                    "actually held, including any buying and selling."
+                )
+
+            st.markdown("#### The headline numbers")
+            m1, m2, m3, m4 = st.columns(4)
+            _bn = perf["benchmark"]
+            m1.metric("Return (annualized)", fmt_decimal_pct(perf["ret"]),
+                      delta=(f"{(perf['ret'] - perf['bench_ret']) * 100:+.1f} pts vs {_bn}"
+                             if perf["ret"] is not None and perf["bench_ret"] is not None else None),
+                      help="Your portfolio's yearly rate of return over this window.")
+            m2.metric("Alpha (annualized)", fmt_decimal_pct(perf["alpha"]),
+                      help="Return beyond what your beta and the benchmark explain. Above zero "
+                           "means the mix added something market exposure alone would not have.")
+            m3.metric("Beta", fmt_ratio(perf["beta"]),
+                      help="Sensitivity to the benchmark. Below 1 means a smoother ride than the "
+                           "index; above 1 means a rougher one.")
+            m4.metric("Sharpe ratio", fmt_ratio(perf["sharpe"]),
+                      delta=(f"{_bn} {perf['bench_sharpe']:.2f}"
+                             if perf.get("bench_sharpe") is not None else None),
+                      delta_color="off",
+                      help="Return per unit of risk. Higher is better.")
+
+            s1, s2, s3, s4 = st.columns(4)
+            s1.metric("Volatility", fmt_decimal_pct(perf["vol"]),
+                      delta=(f"{_bn} {perf['bench_vol']:.1%}" if perf.get("bench_vol") else None),
+                      delta_color="off", help="How much the value swings, annualized.")
+            s2.metric("Max drawdown", fmt_decimal_pct(perf["drawdown"]),
+                      delta=(f"{_bn} {perf['bench_drawdown']:.1%}"
+                             if perf.get("bench_drawdown") is not None else None),
+                      delta_color="off", help="Worst peak-to-trough fall over the window.")
+            if perf.get("corr") is not None:
+                s3.metric("Correlation", fmt_ratio(perf["corr"]),
+                          help="How closely the portfolio tracks the benchmark. Near 1 means you "
+                               "own something that behaves much like the index itself.")
+            if perf.get("tracking_error") is not None:
+                s4.metric("Tracking error", fmt_decimal_pct(perf["tracking_error"]),
+                          help="How far returns typically stray from the benchmark's.")
+
+            if perf.get("skipped"):
+                st.caption("Left out for want of usable data: " +
+                           ", ".join(f"**{t}** ({why})" for t, why in perf["skipped"].items()
+                                     if t != _bn) +
+                           f". Measured on {fmt_dollar_big(perf['total'])} of holdings.")
+
+            st.markdown("#### Growth vs. the benchmark")
+            st.caption("Both start at 100, so the gap is the difference in performance.")
+            gfig = go.Figure()
+            gfig.add_trace(go.Scatter(
+                x=perf["bench_growth"].index, y=perf["bench_growth"].values,
+                name=f"{_bn} ({BENCHMARKS.get(_bn, _bn).split(' — ')[-1]})",
+                line=dict(color=COLOR_PURPLE, width=1.8)))
+            gfig.add_trace(go.Scatter(
+                x=perf["growth"].index, y=perf["growth"].values, name="Your portfolio",
+                line=dict(color=COLOR_PRIMARY, width=2.6)))
+            style_chart(gfig, height=380, yaxis_title="Growth of 100")
+            st.plotly_chart(gfig, use_container_width=True)
+
+            if perf.get("contrib"):
+                st.markdown("#### Where the risk actually comes from")
+                st.caption(
+                    "Share of risk is each holding's contribution to total portfolio volatility. "
+                    "Compare it to the weight: a ratio above 1 means that holding carries more "
+                    "risk than its size suggests."
+                )
+                rows = []
+                for t, c in sorted(perf["contrib"].items(), key=lambda kv: -kv[1]["risk"]):
+                    ratio = (c["risk"] / c["weight"]) if c["weight"] else None
+                    rows.append({
+                        "Ticker": t,
+                        "Value": fmt_dollar_big(c["value"]),
+                        "Weight": f"{c['weight']:.1%}",
+                        "Share of risk": f"{c['risk']:.1%}",
+                        "Risk vs. weight": (f"{ratio:.2f}x" if ratio is not None else "—"),
+                        "Beta": (f"{c['beta']:.2f}" if c["beta"] is not None else "—"),
+                        "Reading": ("carries more risk than its weight" if ratio and ratio > 1.15
+                                    else "calmer than its weight" if ratio and ratio < 0.85
+                                    else "roughly proportional"),
+                    })
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+                rfig = go.Figure()
+                _order = [r["Ticker"] for r in rows]
+                rfig.add_trace(go.Bar(
+                    x=_order, y=[perf["contrib"][t]["weight"] * 100 for t in _order],
+                    name="Weight", marker_color=COLOR_GRAY))
+                rfig.add_trace(go.Bar(
+                    x=_order, y=[perf["contrib"][t]["risk"] * 100 for t in _order],
+                    name="Share of risk", marker_color=COLOR_PRIMARY))
+                style_chart(rfig, height=330, yaxis_title="% of portfolio", xaxis_title="")
+                rfig.update_layout(barmode="group")
+                st.plotly_chart(rfig, use_container_width=True)
+
+            if perf.get("most_correlated"):
+                st.markdown("#### Diversification check")
+                st.caption(
+                    "Two holdings that move together give less protection than owning two things "
+                    "suggests. Correlation runs from 1 (move identically) through 0 (unrelated) "
+                    "to -1 (move oppositely)."
+                )
+                d1, d2 = st.columns(2)
+                with d1:
+                    st.markdown("**Most alike** — least diversifying")
+                    for a, b, c in perf["most_correlated"]:
+                        _flag = " ⚠️" if c > 0.9 else ""
+                        st.markdown(f"- `{a}` + `{b}` — **{c:.2f}**{_flag}")
+                    if any(c > 0.9 for _, _, c in perf["most_correlated"]):
+                        st.caption("A pair above 0.90 is close to owning the same thing twice.")
+                with d2:
+                    st.markdown("**Least alike** — genuinely diversifying")
+                    for a, b, c in perf["least_correlated"]:
+                        st.markdown(f"- `{a}` + `{b}` — **{c:.2f}**")
+                    st.caption("Negative pairs tend to cushion each other.")
+
+            st.caption(
+                "Educational only, not financial advice. These are standard textbook measures "
+                "computed from delayed public price data over one window — a different period can "
+                "tell a very different story, and past results say nothing about the future."
+            )
+
+
+# ===========================================================
 # PAGE 4: BACKTESTER
 # Tests a simple moving-average crossover strategy:
 #   - BUY (go to 100% invested) when the short-term moving
@@ -5200,7 +5611,7 @@ elif page == "Glossary":
     GLOSSARY = {
         "Lumen Grade (A–F)": ("How Lumen Works", "Lumen's own quality/value score. It rates a stock 0–100 on five equally-weighted categories — Valuation, Profitability, Growth, Financial Health, and Momentum — by scoring each underlying metric against fixed 'healthy' benchmarks, then averaging. It's a research filter, not a rating-agency grade or advice."),
         "Buy / Hold / Sell Signal": ("How Lumen Works", "A separate 0–100 score that blends Lumen's grade with analyst price-target upside, the analyst consensus rating, and price momentum, then maps to Strong Buy → Strong Sell. Data-driven, not advice."),
-        "Data sources": ("How Lumen Works", "Fundamentals, prices, and analyst estimates come from Yahoo Finance; economic data and Treasury yields come from FRED (the Federal Reserve). Lumen computes the grades and signals itself from that data."),
+        "Data sources": ("How Lumen Works", "Prices and fundamentals come from Yahoo Finance where available, falling back to Financial Modeling Prep and then Twelve Data — needed because Yahoo blocks shared web hosts, and no single free source covers every stock, ETF, and fund. Analyst estimates come from Financial Modeling Prep; economic data and Treasury yields from FRED (the Federal Reserve). Lumen computes the grades, signals, and portfolio analytics itself from that data."),
         "Market Cap": ("Valuation", "The total value of all a company's shares (share price × number of shares). A quick measure of company size."),
         "P/E Ratio (Price-to-Earnings)": ("Valuation", "Share price divided by earnings per share. Roughly, how many dollars you pay for each $1 of yearly profit. Lower can mean cheaper."),
         "Forward P/E": ("Valuation", "Like P/E, but using analysts' expected future earnings instead of past ones."),
@@ -5234,6 +5645,11 @@ elif page == "Glossary":
         "CPI / Inflation": ("Macro", "The Consumer Price Index measures the cost of a basket of goods. Its yearly change is the inflation rate."),
         "Correlation": ("Portfolio", "How closely two investments move together, from -1 (opposite) to +1 (lockstep). Lower correlation between holdings = better diversification."),
         "Diversification": ("Portfolio", "Spreading money across investments that don't all move together, to reduce risk without necessarily reducing return."),
+        "Alpha": ("Portfolio", "The part of a portfolio's return that its beta doesn't explain — what was earned beyond what simply carrying that much market risk would have produced. Positive alpha is the interesting kind of outperformance; beating the market with a high beta isn't alpha, it's just a bigger bet. Shown annualized on the Performance page."),
+        "Benchmark": ("Portfolio", "The yardstick a portfolio is measured against, usually a broad index like the S&P 500. Beta and alpha only mean something against a comparable benchmark — scoring a bond portfolio against a stock index produces a valid-looking number that tells you nothing."),
+        "Risk Contribution": ("Portfolio", "Each holding's share of the portfolio's total volatility. Deliberately not the same as its share of the money: a small, jumpy position can generate far more risk than its weight suggests, and a large, steady one far less. A holding that moves against everything else can even contribute negative risk, calming the portfolio down."),
+        "Tracking Error": ("Portfolio", "How far a portfolio's returns typically stray from its benchmark's, annualized. Near zero means you're effectively holding the index; larger numbers mean you're taking a genuinely different position — for better or worse."),
+        "Risk-free Rate": ("Portfolio", "The return available with essentially no risk, usually short-term Treasuries or cash. Sharpe ratio and alpha both measure what you earned above this, since any investment should at least beat doing nothing."),
     }
 
     query = st.text_input("Search terms:", value="", placeholder="e.g. P/E, beta, drawdown").strip().lower()
