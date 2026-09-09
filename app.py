@@ -1552,6 +1552,36 @@ def _max_drawdown(r):
     return float((c / c.cummax() - 1).min())
 
 
+def _return_attribution(rets, weights):
+    """Split the portfolio's total return among the holdings that made it.
+
+    A holding's contribution is its weight times its return, but adding
+    those up day by day does NOT reproduce the portfolio's compounded
+    total: returns compound, contributions don't. Left raw, the column
+    lands a percentage point or so away from the headline figure, which
+    immediately invites "so where did the rest go?".
+
+    Carino's method fixes that by rescaling each day's contributions by
+    ln(1+r)/r, so the parts sum to the whole exactly. Returns
+    (total_return, {ticker: {...}})."""
+    port = (rets * weights).sum(axis=1)
+    total = float((1 + port).prod() - 1)
+    k = float(np.log1p(total) / total) if abs(total) > 1e-12 else 1.0
+    with np.errstate(divide="ignore", invalid="ignore"):
+        kt = np.log1p(port) / port          # 0/0 on a flat day
+    kt = pd.Series(kt, index=port.index).replace([np.inf, -np.inf], np.nan).fillna(1.0)
+
+    out = {}
+    for t in rets.columns:
+        w = float(weights[t])
+        out[t] = {
+            "weight": w,
+            "own_return": float((1 + rets[t]).prod() - 1),
+            "contribution": float(((rets[t] * w) * kt / k).sum()),
+        }
+    return total, out
+
+
 def portfolio_performance(holdings, benchmark="SPY", rf=0.04, period="1y"):
     """Measure a portfolio against a benchmark.
 
@@ -1618,6 +1648,8 @@ def portfolio_performance(holdings, benchmark="SPY", rf=0.04, period="1y"):
             contrib[t] = {"weight": float(weights[t]), "risk": float(share[t]),
                           "beta": tb, "value": value[t]}
 
+    period_return, attribution = _return_attribution(rets, weights)
+
     corr = rets.corr()
     pairs = [(a, b, float(corr.loc[a, b]))
              for i, a in enumerate(held) for b in held[i + 1:]]
@@ -1636,6 +1668,7 @@ def portfolio_performance(holdings, benchmark="SPY", rf=0.04, period="1y"):
         "corr": float(np.corrcoef(port, bench)[0, 1]),
         "tracking_error": float((port - bench).std() * np.sqrt(252)),
         "contrib": contrib,
+        "attribution": attribution, "period_return": period_return,
         "most_correlated": pairs[:3], "least_correlated": pairs[-3:][::-1],
     }
 
@@ -4666,6 +4699,56 @@ elif page == "Performance":
             style_chart(gfig, height=380, yaxis_title="Growth of 100")
             st.plotly_chart(gfig, use_container_width=True)
 
+            if perf.get("attribution"):
+                st.markdown("#### What produced the return")
+                st.caption(
+                    "A holding's contribution is its return scaled by how much of the portfolio "
+                    "it is. The best performer and the biggest contributor are often different "
+                    "holdings — a small position can post a great return and still barely move "
+                    "the total."
+                )
+                _attr = perf["attribution"]
+                _tot = perf.get("period_return") or 0.0
+                _arows, _pos, _neg = [], 0.0, 0.0
+                for t, a in sorted(_attr.items(), key=lambda kv: -kv[1]["contribution"]):
+                    c = a["contribution"]
+                    _pos += max(c, 0.0)
+                    _neg += min(c, 0.0)
+                    _arows.append({
+                        "Ticker": t,
+                        "Weight": f"{a['weight']:.1%}",
+                        "Its own return": f"{a['own_return']:+.1%}",
+                        "Contributed": f"{c:+.2%}",
+                        "Share of the gain": (f"{c / _tot:.0%}" if abs(_tot) > 1e-9 else "—"),
+                    })
+                st.dataframe(pd.DataFrame(_arows), use_container_width=True, hide_index=True)
+
+                _best = max(_attr.items(), key=lambda kv: kv[1]["own_return"])
+                _biggest = max(_attr.items(), key=lambda kv: kv[1]["contribution"])
+                if _best[0] != _biggest[0]:
+                    st.caption(
+                        f"Best performer was **{_best[0]}** at {_best[1]['own_return']:+.1%}, but "
+                        f"**{_biggest[0]}** contributed the most ({_biggest[1]['contribution']:+.2%}) "
+                        "because it is the larger position."
+                    )
+                st.caption(
+                    f"Contributions sum to {sum(a['contribution'] for a in _attr.values()):+.2%}, "
+                    f"matching the portfolio's {_tot:+.2%} over this window."
+                    + (f" Gains {_pos:+.2%}, losses {_neg:+.2%}." if _neg < 0 else "")
+                )
+
+                afig = go.Figure()
+                _ao = [r["Ticker"] for r in _arows]
+                afig.add_trace(go.Bar(
+                    x=_ao, y=[_attr[t]["contribution"] * 100 for t in _ao],
+                    marker_color=[COLOR_GREEN if _attr[t]["contribution"] >= 0 else "#b4694f"
+                                  for t in _ao],
+                    name="Contribution"))
+                style_chart(afig, height=300, yaxis_title="Contribution to return (%)",
+                            xaxis_title="")
+                afig.update_layout(showlegend=False)
+                st.plotly_chart(afig, use_container_width=True)
+
             if perf.get("contrib"):
                 st.markdown("#### Where the risk actually comes from")
                 st.caption(
@@ -5647,6 +5730,7 @@ elif page == "Glossary":
         "Diversification": ("Portfolio", "Spreading money across investments that don't all move together, to reduce risk without necessarily reducing return."),
         "Alpha": ("Portfolio", "The part of a portfolio's return that its beta doesn't explain — what was earned beyond what simply carrying that much market risk would have produced. Positive alpha is the interesting kind of outperformance; beating the market with a high beta isn't alpha, it's just a bigger bet. Shown annualized on the Performance page."),
         "Benchmark": ("Portfolio", "The yardstick a portfolio is measured against, usually a broad index like the S&P 500. Beta and alpha only mean something against a comparable benchmark — scoring a bond portfolio against a stock index produces a valid-looking number that tells you nothing."),
+        "Return Attribution": ("Portfolio", "Splitting a portfolio's total return among the holdings that produced it. A holding's contribution is its own return scaled by its weight, so the best performer and the biggest contributor are frequently different names — a 2% position that doubles adds less than a 50% position that gains 12%. Lumen uses Carino linking so the contributions add up to the portfolio's compounded return exactly."),
         "Risk Contribution": ("Portfolio", "Each holding's share of the portfolio's total volatility. Deliberately not the same as its share of the money: a small, jumpy position can generate far more risk than its weight suggests, and a large, steady one far less. A holding that moves against everything else can even contribute negative risk, calming the portfolio down."),
         "Tracking Error": ("Portfolio", "How far a portfolio's returns typically stray from its benchmark's, annualized. Near zero means you're effectively holding the index; larger numbers mean you're taking a genuinely different position — for better or worse."),
         "Risk-free Rate": ("Portfolio", "The return available with essentially no risk, usually short-term Treasuries or cash. Sharpe ratio and alpha both measure what you earned above this, since any investment should at least beat doing nothing."),
